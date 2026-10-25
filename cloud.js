@@ -79,7 +79,7 @@ const Cloud = (() => {
     if (r.status === 401) { setSession(null); throw new LoginNeeded('Sitzung ungültig, bitte neu anmelden'); }
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
-      throw new Error(j.message || `Serverfehler ${r.status}`);
+      throw Object.assign(new Error(j.message || `Serverfehler ${r.status}`), { status: r.status });
     }
     return r.status === 204 || prefer?.includes('return=minimal') ? null : r.json();
   }
