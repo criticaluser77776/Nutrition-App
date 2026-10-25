@@ -3,10 +3,10 @@
    Woche), Tagebuch-Tagesansicht mit Werteboard und Mahlzeiten, Eintragen mit Produktsuche (BLS, OFF, eigene),
    Barcode, „Zuletzt“ und Schnelleintrag, Produktseite mit Eintragen nach Menge oder Portion, Einträge bearbeiten,
    kopieren und löschen, Formular für eigene Produkte, Rezepte aus Zutaten, Favoriten und Shortcuts,
-   Planer mit Zielen je Wochentag, Platzhalter für Berichte, „Mehr“ mit Konto und Quellenangaben.
+   Planer mit Zielen je Wochentag, Berichte (Tag, Woche, Diät mit Gewicht), „Mehr“ mit Konto und Quellenangaben.
    Routen: #/ (Mein Tag), #/diary, #/add?meal=1&tab=&q=, #/quick?meal=, #/entry?id=, #/product?id=&meal=,
    #/product/edit?id=|ean=|name=, #/recipes, #/recipe?id=&meal=, #/recipe/edit?id=, #/shortcut?id=,
-   #/reports, #/planner, #/more */
+   #/reports?view=day|week|diet, #/planner, #/more */
 
 const MEALS = { 1: 'Frühstück', 2: 'Mittagessen', 3: 'Abendessen', 4: 'Snacks' };
 const MACROS = [  // Reihenfolge und Farben wie in der Legende; kcal je Gramm für die Aufteilung nach Energie
@@ -168,18 +168,6 @@ function drawDay(weekRows, weekGoals) {
     <span>${macroMode === 'kcal' ? `${num(p.v)} kcal` : `${num(total[p.k])} g`}</span>
     <span>${partSum ? num((100 * p.v) / partSum) : 0} %</span></div>`).join('');
 
-  // Woche: kcal je Tag gegen das Tagesziel
-  const perDay = Array(7).fill(0);
-  weekRows.forEach(r => { perDay[isoWeekday(new Date(r.eaten_at)) - 1] += Number(r.kcal || 0); });
-  const goalOf = wd => Number(weekGoals.find(x => x.weekday === wd)?.kcal || 0);
-  const top = Math.max(1, ...perDay, ...WEEKDAYS.map((_, i) => goalOf(i + 1))) * 1.1;
-  const bars = perDay.map((v, i) => {
-    const wg = goalOf(i + 1);
-    return `<div class="${i + 1 === isoWeekday(day) ? 'sel' : ''}" title="${num(v)} kcal">
-      <span class="col"><i style="height:${(100 * v) / top}%" class="${wg && v > wg ? 'over' : ''}"></i>
-        ${wg ? `<hr style="bottom:${(100 * wg) / top}%">` : ''}</span>${WEEKDAYS[i]}</div>`;
-  }).join('');
-
   view.innerHTML = `
     <div class="section-head"><h2>Dein Tag</h2><a href="#/diary">Details</a></div>
     <section class="card">
@@ -206,12 +194,26 @@ function drawDay(weekRows, weekGoals) {
       </div>
       <div class="macros">${pie(parts)}<div class="legend">${legend}</div></div>
     </section>
-    <div class="section-head"><h2>Deine Woche</h2><a href="#/reports">Details</a></div>
-    <section class="card"><div class="weekchart">${bars}</div></section>`;
+    <div class="section-head"><h2>Deine Woche</h2><a href="#/reports?view=week">Details</a></div>
+    <section class="card">${weekChart(weekRows, weekGoals)}</section>`;
   view.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => {
     macroMode = b.dataset.mode;
     drawDay(weekRows, weekGoals);  // nur neu zeichnen, die Daten sind schon da
   }));
+}
+
+// Woche von day: kcal je Tag als Säule, Tagesziel als gestrichelte Linie
+function weekChart(weekRows, weekGoals) {
+  const perDay = Array(7).fill(0);
+  weekRows.forEach(r => { perDay[isoWeekday(new Date(r.eaten_at)) - 1] += Number(r.kcal || 0); });
+  const goalOf = wd => Number(weekGoals.find(x => x.weekday === wd)?.kcal || 0);
+  const top = Math.max(1, ...perDay, ...WEEKDAYS.map((_, i) => goalOf(i + 1))) * 1.1;
+  return `<div class="weekchart">${perDay.map((v, i) => {
+    const wg = goalOf(i + 1);
+    return `<div class="${i + 1 === isoWeekday(day) ? 'sel' : ''}" title="${num(v)} kcal">
+      <span class="col"><i style="height:${(100 * v) / top}%" class="${wg && v > wg ? 'over' : ''}"></i>
+        ${wg ? `<hr style="bottom:${(100 * wg) / top}%">` : ''}</span>${WEEKDAYS[i]}</div>`;
+  }).join('')}</div>`;
 }
 
 // ---------- Tagebuch ----------
@@ -968,22 +970,55 @@ async function fillShortcuts(box, dayIso, done) {
   });
 }
 
-// Seitenleiste vom rechten Rand; schließt über Hintergrund, Schließen-Knopf oder Wischen nach rechts
-function openShortcuts() {
-  if ($('dialog.drawer[open]')) return;  // geschlossene entfernt erst das close-Ereignis
+// Seitenleiste vom rechten Rand; gleitet hinaus über Hintergrund, Schließen-Knopf, Esc oder Wischen nach rechts.
+// drag: vom Bildschirmrand hereinziehen. Bis zum Loslassen ist die Leiste nicht modal (ein modaler Dialog macht die
+// Seite inert, und die laufende Geste dort bekäme keine Zeigerereignisse mehr); die Rückgabe steuert dann die Leiste.
+function openShortcuts(drag = false) {
+  if ($('dialog.drawer[open]')) return null;  // geschlossene entfernt erst das close-Ereignis
   const dlg = document.createElement('dialog');
   dlg.className = 'drawer';
   dlg.innerHTML = `<div class="drawer-head"><h2>Shortcuts</h2>
     <button type="button" class="icon-btn" data-close aria-label="Schließen">${icon('close')}</button></div><div class="drawer-body"></div>`;
   document.body.append(dlg);
-  dlg.addEventListener('close', () => dlg.remove());
-  dlg.addEventListener('click', e => { if (e.target === dlg || e.target.closest('[data-close], a')) dlg.close(); });
-  addSwipe(dlg, () => ({
-    move: dx => { dlg.style.transition = 'none'; dlg.style.transform = `translateX(${Math.max(0, dx)}px)`; },
-    end: dx => { dlg.style.transition = dlg.style.transform = ''; if (dx > 80) dlg.close(); },
-  }));
-  dlg.showModal();
-  fillShortcuts(dlg.querySelector('.drawer-body'), () => isoDay(day), () => { dlg.close(); route(); });
+  const shut = () => {
+    if (dlg.classList.contains('shut')) return;
+    dlg.classList.add('shut');
+    shiftTo(dlg, dlg.offsetWidth, SLIDE_MS);
+    setTimeout(() => { dlg.close(); dlg.remove(); }, SLIDE_MS);  // nicht auf das close-Ereignis warten, es kommt verzögert
+  };
+  const modal = () => {
+    dlg.close();
+    dlg.showModal();
+    dlg.addEventListener('close', () => { if (!dlg.open) dlg.remove(); });  // das close vom Wechsel kommt verzögert
+    dlg.addEventListener('cancel', e => { e.preventDefault(); shut(); });
+    dlg.addEventListener('click', e => { if (e.target === dlg || e.target.closest('[data-close], a')) shut(); });
+    addSwipe(dlg, () => ({
+      move: dx => shiftTo(dlg, Math.max(0, dx)),
+      end: dx => (dx > 80 ? shut() : shiftTo(dlg, 0, SLIDE_MS)),
+    }));
+    fillShortcuts(dlg.querySelector('.drawer-body'), () => isoDay(day), () => { shut(); route(); });
+  };
+  if (!drag) { modal(); return null; }
+  dlg.classList.add('dragged');  // ohne Einblend-Animation, die Lage kommt vom Finger
+  dlg.show();
+  shiftTo(dlg, dlg.offsetWidth);
+  return {
+    drag: dx => shiftTo(dlg, Math.max(0, dlg.offsetWidth + dx)),
+    release: dx => {
+      if (dx < -80) { modal(); shiftTo(dlg, 0, SLIDE_MS); return; }
+      shiftTo(dlg, dlg.offsetWidth, SLIDE_MS);
+      setTimeout(() => dlg.remove(), SLIDE_MS);
+    },
+  };
+}
+
+// Geste vom rechten Rand: Seitenleiste mit dem Finger hereinziehen
+function edgeSwipe() {
+  let d;
+  return {
+    move: dx => { if (d === undefined) d = openShortcuts(true); d?.drag(dx); },
+    end: dx => d?.release(dx),
+  };
 }
 
 async function renderShortcut(params, isCurrent) {
@@ -1304,11 +1339,57 @@ function addSwipe(area, pick) {
   area.addEventListener('dragstart', e => e.preventDefault());  // Maus: Links nicht als Drag & Drop ziehen
 }
 
-// Ganze Fläche folgt dem Finger gedämpft; ab 60 px blättert step um eins vor (nach links) oder zurück
-const slide = (el, step) => ({
-  move: dx => { el.style.transition = 'none'; el.style.transform = `translateX(${dx / 3}px)`; },
-  end: dx => { el.style.transition = el.style.transform = ''; if (Math.abs(dx) >= 60) step(dx < 0 ? 1 : -1); },
-});
+const SLIDE_MS = 220;  // Dauer der Gleitbewegung nach dem Loslassen
+const pause = ms => new Promise(r => setTimeout(r, ms));
+
+// Fläche el auf x verschieben, mit ms > 0 als Gleitbewegung
+const shiftTo = (el, x, ms = 0) => {
+  el.style.transition = ms ? `transform ${ms}ms ease-out` : 'none';
+  el.style.transform = x ? `translateX(${x}px)` : '';
+};
+
+// Fläche folgt dem Finger 1:1. Ab einem Viertel der Breite oder bei schnellem Wisch blättert step um eins vor (nach
+// links) oder zurück: die Fläche gleitet hinaus und der Nachbar von der anderen Seite herein, sonst schnappt sie zurück.
+// ghost: Eine Kopie zeigt beim Hinausgleiten den alten Inhalt, während der neue lädt (Seiten mit Abfrage).
+function slide(el, step, ghost = false) {
+  let lastX = 0, lastT = 0, speed = 0;  // px je ms der letzten Bewegung
+  return {
+    move: dx => {
+      const t = performance.now();
+      if (lastT && t > lastT) speed = (dx - lastX) / (t - lastT);
+      lastX = dx;
+      lastT = t;
+      shiftTo(el, dx);
+    },
+    end: async dx => {
+      const w = el.offsetWidth, dir = dx < 0 ? 1 : -1;
+      if (performance.now() - lastT > 100) speed = 0;  // vor dem Loslassen stillgehalten: kein schneller Wisch
+      const flick = Math.abs(dx) > 20 && Math.abs(speed) > 0.5 && Math.sign(speed) === Math.sign(dx);
+      if (!dx || (Math.abs(dx) < w / 4 && !flick)) { shiftTo(el, 0, SLIDE_MS); return; }
+      if (!ghost) {
+        shiftTo(el, -dir * w, SLIDE_MS / 2);
+        await pause(SLIDE_MS / 2);
+        step(dir);
+        shiftTo(el, dir * w);
+        void el.offsetWidth;  // Startlage festschreiben, bevor die Gleitbewegung beginnt
+        shiftTo(el, 0, SLIDE_MS / 2);
+        return;
+      }
+      const g = el.cloneNode(true);
+      g.removeAttribute('id');
+      g.inert = true;
+      Object.assign(g.style, { position: 'absolute', top: `${el.offsetTop}px`, left: `${el.offsetLeft}px`, width: `${w}px`, margin: 0 });
+      el.after(g);
+      shiftTo(el, dx + dir * w);  // neuer Inhalt beginnt direkt neben dem alten
+      el.style.visibility = 'hidden';
+      Promise.resolve(step(dir)).finally(() => { el.style.visibility = ''; });
+      void el.offsetWidth;
+      shiftTo(g, -dir * w, SLIDE_MS);
+      shiftTo(el, 0, SLIDE_MS);
+      setTimeout(() => g.remove(), SLIDE_MS + 50);
+    },
+  };
+}
 
 // Zeilen: Eintrag nach rechts = Bearbeiten (gelb), nach links = Löschen (rot); Suchtreffer in beide Richtungen = Ansehen
 const SWIPE_BG = {
@@ -1430,12 +1511,242 @@ async function renderPlanner(isCurrent) {
   });
 }
 
-// ---------- Platzhalter und Mehr ----------
+// ---------- Berichte ----------
+// #/reports?view=day|week|diet. Tag und Woche zeigen den Tag bzw. die Woche von day; die Pfeile blättern wie in „Mein Tag“.
+// Die Diät zeigt die letzten dietDays Tage: Gewicht aus nut_body (Schlüssel owner + day) und Energie je Tag gegen das
+// Tagesziel. Der laufende Tag fehlt in der Energiebilanz, weil er noch nicht abgeschlossen ist.
 
-function renderPlaceholder({ title, tab, ic, text, sub = false }) {
-  chrome({ title, tab, sub });
-  view.innerHTML = `<section class="card empty-state">${icon(ic)}<b>${esc(title)}</b><p class="hint">${esc(text)}</p></section>`;
+const REPORT_VIEWS = { day: 'Tag', week: 'Woche', diet: 'Diät' };
+const DIET_RANGES = [[30, '30 Tage'], [90, '90 Tage'], [365, '1 Jahr']];
+const KCAL_PER_KG = 7000;  // Faustwert: so viel Energie steckt in einem Kilogramm Körperfett
+const PAGE = 1000;  // Supabase liefert höchstens so viele Zeilen je Abfrage
+let dietDays = 90;
+
+// Alle Zeilen einer Abfrage seitenweise, bis eine Seite leer bleibt (so stimmt es auch, wenn der Server weniger als
+// PAGE Zeilen je Abfrage liefert); path braucht ein order, damit die Seiten lückenlos aneinander passen
+async function restAll(path) {
+  const all = [];
+  for (;;) {
+    const part = await Cloud.rest(`${path}&limit=${PAGE}&offset=${all.length}`);
+    if (!part.length) return all;
+    all.push(...part);
+  }
 }
+
+const ddmm = d => d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+const signed = (v, d = 0) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${num(Math.abs(v), d)}`;
+// Kalenderwoche nach ISO 8601: Woche des Donnerstags
+const isoWeek = d => { const th = dayStart(d, 4 - isoWeekday(d)); return Math.floor(Math.round((th - new Date(th.getFullYear(), 0, 1)) / 864e5) / 7) + 1; };
+// Abweichung vom Ziel mit Vorzeichen; darüber rot, darunter grün
+const diffCell = (v, goal) => (goal ? `<td class="${v > goal ? 'over' : 'ok'}">${signed(v - goal)}</td>` : '<td>–</td>');
+const rnav = (label, step, what) => `<div class="rnav">
+  <button class="icon-btn small" data-shift="${-step}" aria-label="Vorherige${what}">${icon('left')}</button><b>${label}</b>
+  <button class="icon-btn small" data-shift="${step}" aria-label="Nächste${what}">${icon('right')}</button></div>`;
+
+async function renderReports(params, isCurrent) {
+  const v = REPORT_VIEWS[params.get('view')] ? params.get('view') : 'day';
+  chrome({ title: 'Berichte', tab: 'reports' });
+  const report = await (v === 'week' ? weekReport() : v === 'diet' ? dietReport() : dayReport());
+  if (!isCurrent()) return;
+  view.innerHTML = `<div class="seg">${Object.entries(REPORT_VIEWS).map(([k, n]) =>
+    `<button data-view="${k}" class="${k === v ? 'on' : ''}">${n}</button>`).join('')}</div>${report.html}`;
+  view.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => { location.hash = `#/reports?view=${b.dataset.view}`; }));
+  view.querySelectorAll('[data-shift]').forEach(b => b.addEventListener('click', () => shiftDay(Number(b.dataset.shift))));
+  report.bind?.();
+}
+
+async function dayReport() {
+  const { entries, goal, total } = await loadDay(day);
+  const energy = MACROS.reduce((a, m) => a + total[m.k] * m.kcal, 0);
+  const nutr = [{ k: 'kcal', long: 'Energie', unit: 'kcal' }, ...MACROS.map(m => ({ ...m, unit: 'g' }))].map(r => {
+    const gv = Number(goal[r.k] || 0);
+    const share = r.unit === 'g' ? (energy ? `${num((100 * total[r.k] * r.kcal) / energy)} %` : '–') : '';
+    return `<tr><th>${r.long}</th><td>${num(total[r.k])} ${r.unit}</td><td>${gv ? num(gv) : '–'}</td>${diffCell(total[r.k], gv)}<td>${share}</td></tr>`;
+  }).join('');
+  const macroCells = t => `<td>${num(t.kcal)}</td>${MACROS.map(m => `<td>${num(t[m.k])}</td>`).join('')}`;
+  const meals = Object.entries(MEALS).map(([m, name]) => `<tr><th>${name}</th>${macroCells(totals(entries.filter(e => e.meal === Number(m))))}</tr>`).join('');
+  const top = [...entries].sort((a, b) => b.kcal - a.kcal).slice(0, 5).map(e => `<tr><th class="wrap">${esc(e.label)}</th>
+    <td>${num(e.kcal)} kcal</td><td>${total.kcal ? num((100 * e.kcal) / total.kcal) : 0} %</td></tr>`).join('');
+  return { html: `${rnav(day.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' }), 1, 'r Tag')}
+    <section class="card"><h2>Nährwerte</h2>
+      <table class="rtable"><thead><tr><th></th><th>Ist</th><th>Ziel</th><th>Diff.</th><th>Anteil</th></tr></thead><tbody>${nutr}</tbody></table>
+      ${goal.kcal ? '' : '<p class="hint">Noch kein Tagesziel für diesen Wochentag – <a href="#/planner">im Planer festlegen</a>.</p>'}</section>
+    ${entries.length ? `<section class="card"><h2>Mahlzeiten</h2>
+      <table class="rtable"><thead><tr><th></th><th>kcal</th>${MACROS.map(m => `<th>${m.name} g</th>`).join('')}</tr></thead>
+        <tbody>${meals}</tbody><tfoot><tr><th>Summe</th>${macroCells(total)}</tr></tfoot></table></section>
+    <section class="card"><h2>Größte Posten</h2><table class="rtable"><tbody>${top}</tbody></table></section>`
+    : `<section class="card empty-state">${icon('diary')}<b>Nichts eingetragen</b><p class="hint"><a href="#/diary">Zum Tagebuch</a></p></section>`}` };
+}
+
+async function weekReport() {
+  const monday = dayStart(day, 1 - isoWeekday(day));
+  const [rows, goals] = await Promise.all([
+    Cloud.rest(`nut_diary?select=eaten_at,kcal,fat,carbs,protein&${rangeQuery(monday, dayStart(monday, 7))}`),
+    Cloud.rest('nut_goals?select=weekday,kcal,protein,fat,carbs'),
+  ]);
+  const days = WEEKDAYS.map((w, i) => {
+    const d = dayStart(monday, i), list = rows.filter(r => isoDay(new Date(r.eaten_at)) === isoDay(d));
+    return { w, d, n: list.length, t: totals(list), g: Number(goals.find(x => x.weekday === i + 1)?.kcal || 0) };
+  });
+  const today = dayStart(new Date());
+  const logged = days.filter(x => x.n), withGoal = logged.filter(x => x.g && x.d < today);  // Bilanz wie im Diätbericht bis gestern
+  const all = totals(logged.map(x => x.t));
+  const cells = (t, d = 0) => MACROS.map(m => `<td>${num(t[m.k], d)}</td>`).join('');
+  const body = days.map(x => `<tr class="${isoDay(x.d) === isoDay(day) ? 'sel' : ''}"><th>${x.w} ${ddmm(x.d)}</th>
+    ${x.n ? `<td>${num(x.t.kcal)}</td><td>${x.g ? num(x.g) : '–'}</td>${diffCell(x.t.kcal, x.g)}${cells(x.t)}`
+    : `<td>–</td><td>${x.g ? num(x.g) : '–'}</td><td>–</td>${MACROS.map(() => '<td>–</td>').join('')}`}</tr>`).join('');
+  const avg = Object.fromEntries(Object.entries(all).map(([k, v]) => [k, logged.length ? v / logged.length : 0]));
+  const balance = withGoal.reduce((a, x) => a + x.t.kcal - x.g, 0);
+  return { html: `${rnav(`KW ${isoWeek(monday)} · ${ddmm(monday)}–${ddmm(dayStart(monday, 6))}`, 7, ' Woche')}
+    <section class="card">${weekChart(rows, goals)}</section>
+    <section class="card"><h2>Tage</h2>
+      <table class="rtable"><thead><tr><th></th><th>kcal</th><th>Ziel</th><th>Diff.</th>${MACROS.map(m => `<th>${m.name}</th>`).join('')}</tr></thead>
+        <tbody>${body}</tbody>
+        <tfoot><tr><th>Summe</th><td>${num(all.kcal)}</td><td></td><td></td>${cells(all)}</tr>
+          <tr><th>Ø Tag</th><td>${num(avg.kcal)}</td><td></td><td></td>${cells(avg)}</tr></tfoot></table>
+      <p class="hint">Ø über ${logged.length} ${logged.length === 1 ? 'Tag' : 'Tage'} mit Einträgen; Makros in Gramm.</p></section>
+    ${withGoal.length ? `<section class="card"><h2>Bilanz</h2>${balanceText(balance, withGoal.length)}
+      ${dayStart(monday, 7) > today ? '<p class="hint">Bis gestern; heute zählt erst morgen mit.</p>' : ''}</section>` : ''}` };
+}
+
+// Summe aus gegessen minus Ziel über n Tage, mit dem rechnerischen Gewichtseffekt
+const balanceText = (balance, n) => `<p class="balance ${balance > 0 ? 'over' : 'ok'}"><b>${signed(balance)} kcal</b>
+  ${balance > 0 ? 'über' : 'unter'} dem Ziel</p>
+  <p class="hint">An ${n} ${n === 1 ? 'Tag' : 'Tagen'} mit Einträgen und Ziel; rechnerisch etwa ${num(Math.abs(balance) / KCAL_PER_KG, 2)} kg
+    ${balance > 0 ? 'zu' : 'ab'} (${num(KCAL_PER_KG)} kcal je kg).</p>`;
+
+async function dietReport() {
+  const today = dayStart(new Date()), from = dayStart(today, -dietDays);
+  const [body, rows, goals] = await Promise.all([
+    restAll('nut_body?select=day,weight_kg,body_fat,waist_cm,hip_cm&weight_kg=not.is.null&order=day'),
+    restAll(`nut_diary?select=eaten_at,kcal&${rangeQuery(from, today)}&order=eaten_at,id`),
+    Cloud.rest('nut_goals?select=weekday,kcal'),
+  ]);
+  const pts = body.filter(b => b.day >= isoDay(from)).map(b => ({ d: dateAt(b.day, '12:00'), v: Number(b.weight_kg) }));
+  const perDay = new Map();
+  rows.forEach(r => { const k = isoDay(new Date(r.eaten_at)); perDay.set(k, (perDay.get(k) || 0) + Number(r.kcal || 0)); });
+  const goalOf = d => Number(goals.find(x => x.weekday === isoWeekday(d))?.kcal || 0);
+  const days = Array.from({ length: dietDays }, (_, i) => { const d = dayStart(from, i); return { d, v: perDay.get(isoDay(d)) || 0, g: goalOf(d) }; });
+  const logged = days.filter(x => perDay.has(isoDay(x.d))), withGoal = logged.filter(x => x.g);
+  const balance = withGoal.reduce((a, x) => a + x.v - x.g, 0);
+
+  let weight = '<p class="hint">Im Zeitraum ist noch kein Gewicht eingetragen.</p>';
+  if (pts.length) {
+    const first = pts[0], last = pts.at(-1), change = last.v - first.v, weeks = (last.d - first.d) / (7 * 864e5);
+    weight = `${pts.length > 1 ? lineChart(pts, from, dateAt(isoDay(today), '12:00')) : ''}
+      <div class="kpis"><div class="stat"><b class="sm">${num(first.v, 1)} kg</b><span>Start ${ddmm(first.d)}</span></div>
+        <div class="stat"><b class="sm">${num(last.v, 1)} kg</b><span>aktuell ${ddmm(last.d)}</span></div>
+        <div class="stat"><b class="sm">${signed(change, 1)} kg</b>
+          <span>${weeks >= 1 ? `${signed(change / weeks, 2)} kg/Woche` : 'Veränderung'}</span></div></div>`;
+  }
+  const recent = body.slice(-10).reverse();
+  const list = recent.map((b, i) => {
+    const prev = body[body.length - 2 - i], diff = prev ? Number(b.weight_kg) - Number(prev.weight_kg) : null, d = dateAt(b.day, '12:00');
+    return `<li><span>${d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: '2-digit' })}</span>
+      <b>${num(b.weight_kg, 1)} kg</b><span class="small">${diff === null ? '' : signed(diff, 1)}</span>
+      <button type="button" class="icon-btn small" data-del="${b.day}" aria-label="Gewicht vom ${d.toLocaleDateString('de-DE')} löschen">${icon('trash')}</button></li>`;
+  }).join('');
+  const avg = k => (logged.length ? logged.reduce((a, x) => a + x[k], 0) / logged.length : 0);
+
+  const html = `<div class="seg ranges">${DIET_RANGES.map(([n, label]) => `<button data-range="${n}" class="${n === dietDays ? 'on' : ''}">${label}</button>`).join('')}</div>
+    <section class="card"><h2>Gewicht</h2>${weight}</section>
+    <section class="card"><h2>Gewicht eintragen</h2>
+      <form id="wform" class="pform wform" novalidate>
+        <label>Datum <input name="day" type="date" value="${isoDay(today)}" max="${isoDay(today)}" required></label>
+        <label>Gewicht (kg) <input name="kg" type="number" min="20" max="400" step="any" inputmode="decimal" required></label>
+        <button type="submit">Speichern</button>
+      </form>
+      <p class="error" id="werr" hidden></p>
+      ${list ? `<ul class="wlist">${list}</ul>` : ''}</section>
+    <section class="card"><h2>Energie</h2>
+      ${logged.length ? `${barChart(days)}
+        <div class="kpis"><div class="stat"><b class="sm">${num(avg('v'))}</b><span>Ø kcal gegessen</span></div>
+          <div class="stat"><b class="sm">${withGoal.length ? num(withGoal.reduce((a, x) => a + x.g, 0) / withGoal.length) : '–'}</b><span>Ø kcal Ziel</span></div>
+          <div class="stat"><b class="sm">${logged.length} / ${dietDays}</b><span>Tage erfasst</span></div></div>
+        ${withGoal.length ? balanceText(balance, withGoal.length) : '<p class="hint">Ohne Tagesziele keine Bilanz – <a href="#/planner">im Planer festlegen</a>.</p>'}`
+      : '<p class="hint">Im Zeitraum gibt es keine Einträge im Tagebuch.</p>'}
+      <p class="hint">Bis gestern; heute zählt erst morgen mit.</p></section>`;
+
+  const bind = () => {
+    view.querySelectorAll('[data-range]').forEach(b => b.addEventListener('click', () => { dietDays = Number(b.dataset.range); route(); }));
+    const f = $('#wform'), werr = $('#werr'), kg = fv(f, 'kg');
+    // gespeichertes Gewicht des Tages vorschlagen, aber nichts überschreiben, was der Nutzer selbst eingetippt hat
+    let suggested = '';
+    const fill = () => {
+      if (kg.value !== suggested) return;
+      kg.value = suggested = String(body.find(b => b.day === fv(f, 'day').value)?.weight_kg ?? '');
+    };
+    fv(f, 'day').addEventListener('change', fill);
+    fill();
+    f.addEventListener('submit', async e => {
+      e.preventDefault();
+      werr.hidden = true;
+      const bad = [fv(f, 'day'), kg].find(i => !i.validity.valid || i.value === '');
+      if (bad) { bad.focus(); werr.textContent = bad === kg ? 'Bitte ein Gewicht zwischen 20 und 400 kg eingeben.' : 'Bitte ein Datum bis heute wählen.'; werr.hidden = false; return; }
+      const btn = f.querySelector('[type=submit]');
+      btn.disabled = true;
+      try {
+        await Cloud.rest('nut_body?on_conflict=owner,day', { method: 'POST', body: { day: fv(f, 'day').value, weight_kg: Number(kg.value) },
+          prefer: 'resolution=merge-duplicates,return=minimal' });
+        toast('Gewicht gespeichert');
+        route();
+      } catch (ex) {
+        btn.disabled = false;
+        if (ex instanceof LoginNeeded) { route(); return; }
+        werr.textContent = ex.message;
+        werr.hidden = false;
+      }
+    });
+    view.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
+      const row = body.find(x => x.day === b.dataset.del);
+      if (!confirm(`Gewicht vom ${dateAt(row.day, '12:00').toLocaleDateString('de-DE')} löschen?`)) return;
+      try {
+        // Zeile behalten, wenn noch andere Körpermaße darin stehen
+        if (row.body_fat == null && row.waist_cm == null && row.hip_cm == null) {
+          await Cloud.rest(`nut_body?day=eq.${row.day}`, { method: 'DELETE', prefer: 'return=minimal' });
+        } else {
+          await Cloud.rest(`nut_body?day=eq.${row.day}`, { method: 'PATCH', body: { weight_kg: null }, prefer: 'return=minimal' });
+        }
+        route();
+      } catch (ex) {
+        if (ex instanceof LoginNeeded) route();
+        else toast(ex.message);
+      }
+    }));
+  };
+  return { html, bind };
+}
+
+// Liniendiagramm für Messwerte pts = [{ d: Date, v }] im Zeitraum from…to
+function lineChart(pts, from, to) {
+  const W = 320, H = 150, L = 34, R = 8, T = 10, B = 20;
+  let lo = Math.min(...pts.map(p => p.v)), hi = Math.max(...pts.map(p => p.v));
+  if (hi - lo < 2) { const m = (hi + lo) / 2; lo = m - 1; hi = m + 1; }
+  const x = d => (L + ((W - L - R) * (d - from)) / Math.max(1, to - from)).toFixed(1);
+  const y = v => (T + ((H - T - B) * (hi - v)) / (hi - lo)).toFixed(1);
+  const grid = [hi, (hi + lo) / 2, lo].map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/>
+    <text x="${L - 4}" y="${Number(y(v)) + 3}" text-anchor="end">${num(v, 1)}</text>`).join('');
+  return `<svg class="chart line" viewBox="0 0 ${W} ${H}" role="img" aria-label="Gewichtsverlauf">${grid}
+    <text x="${L}" y="${H - 4}">${ddmm(from)}</text><text x="${W - R}" y="${H - 4}" text-anchor="end">${ddmm(to)}</text>
+    <path d="${pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.d)} ${y(p.v)}`).join(' ')}"/>
+    ${pts.length <= 60 ? pts.map(p => `<circle cx="${x(p.d)}" cy="${y(p.v)}" r="2.5"/>`).join('') : ''}</svg>`;
+}
+
+// Säulen je Tag list = [{ d, v (kcal), g (Ziel) }], das Ziel als Strich über jedem Tag
+function barChart(list) {
+  const W = 320, H = 120, L = 34, R = 8, T = 8, B = 18, bw = (W - L - R) / list.length;
+  const top = Math.max(1, ...list.map(x => Math.max(x.v, x.g))) * 1.1;
+  const y = v => (T + (H - T - B) * (1 - v / top)).toFixed(1);
+  const bars = list.map((x, i) => (x.v ? `<rect x="${(L + i * bw + bw * 0.15).toFixed(1)}" y="${y(x.v)}" width="${(bw * 0.7).toFixed(1)}"
+    height="${(H - B - y(x.v)).toFixed(1)}" class="${x.g && x.v > x.g ? 'over' : ''}"/>` : '')).join('');
+  const goal = list.map((x, i) => (x.g ? `M${(L + i * bw).toFixed(1)} ${y(x.g)} H${(L + (i + 1) * bw).toFixed(1)}` : '')).join(' ');
+  return `<svg class="chart bars" viewBox="0 0 ${W} ${H}" role="img" aria-label="kcal je Tag">
+    <line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"/><text x="${L - 4}" y="${Number(y(top / 1.1)) + 3}" text-anchor="end">${num(top / 1.1)}</text>
+    ${bars}${goal ? `<path class="goal" d="${goal}"/>` : ''}
+    <text x="${L}" y="${H - 4}">${ddmm(list[0].d)}</text><text x="${W - R}" y="${H - 4}" text-anchor="end">${ddmm(list.at(-1).d)}</text></svg>`;
+}
+
+// ---------- Mehr ----------
 
 // ---------- Installation als App ----------
 // Chrome meldet über beforeinstallprompt, dass die Seite als echte App (eigenes Fenster) installiert werden kann.
@@ -1533,7 +1844,7 @@ async function route() {
     else if (path === 'recipe/edit') await renderRecipeEdit(params, isCurrent);
     else if (tab === 'recipe') await renderRecipe(params, isCurrent);
     else if (tab === 'recipes') await renderRecipes(isCurrent);
-    else if (tab === 'reports') renderPlaceholder({ title: 'Berichte', tab, ic: 'reports', text: 'Tages-, Wochen- und Diätbericht folgen in Paket P6.' });
+    else if (tab === 'reports') await renderReports(params, isCurrent);
     else if (tab === 'planner') await renderPlanner(isCurrent);
     else if (tab === 'more') renderMore();
     else if (tab === 'diary') await renderDiary(isCurrent);
@@ -1546,7 +1857,7 @@ async function route() {
 }
 
 // Kalendertag verschieben (setDate statt ±24 h: stimmt auch an Tagen mit Zeitumstellung)
-const shiftDay = n => { day = new Date(day.getFullYear(), day.getMonth(), day.getDate() + n, 12); route(); };
+const shiftDay = n => { day = new Date(day.getFullYear(), day.getMonth(), day.getDate() + n, 12); return route(); };
 const setDay = iso => { day = dateAt(iso, '12:00'); route(); };
 $('#prevDay').addEventListener('click', () => shiftDay(-1));
 $('#nextDay').addEventListener('click', () => shiftDay(1));
@@ -1564,10 +1875,10 @@ addSwipe(view, (t, e) => {
   if (row) return rowSwipe(row);
   if (!view.classList.contains('days')) return null;
   // vom rechten Rand nach links: Shortcut-Menü statt Tageswechsel
-  if (e.clientX > innerWidth - 24) return { move() {}, end: dx => { if (dx < -40) openShortcuts(); } };
-  return slide(view, shiftDay);
+  if (e.clientX > innerWidth - 24) return edgeSwipe();
+  return slide(view, shiftDay, true);
 });
-$('#openShortcuts').addEventListener('click', openShortcuts);
+$('#openShortcuts').addEventListener('click', () => openShortcuts());
 addSwipe($('#weekDays'), () => slide($('#weekDays'), n => shiftDay(7 * n)));
 document.addEventListener('click', e => { if (Date.now() - swipedAt < 400) { e.preventDefault(); e.stopPropagation(); } }, true);
 window.addEventListener('hashchange', route);
