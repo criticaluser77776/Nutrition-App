@@ -1,10 +1,11 @@
 'use strict';
 /* Nutrition – App-Gerüst im Aufbau von docs/UI_VORLAGE.md: Anmeldung, „Mein Tag“ (Energie- und Makrokarte,
-   Woche), Tagebuch-Tagesansicht mit Werteboard und Mahlzeiten, Eintragen mit Produktsuche (BLS, OFF, eigene)
-   und Barcode, Produktseite und Formular für eigene Produkte, Platzhalter für Rezepte, Berichte und Planer,
+   Woche), Tagebuch-Tagesansicht mit Werteboard und Mahlzeiten, Eintragen mit Produktsuche (BLS, OFF, eigene),
+   Barcode, „Zuletzt“ und Schnelleintrag, Produktseite mit Eintragen nach Menge oder Portion, Einträge bearbeiten,
+   kopieren und löschen, Formular für eigene Produkte, Platzhalter für Rezepte, Berichte und Planer,
    „Mehr“ mit Konto und Quellenangaben.
-   Routen: #/ (Mein Tag), #/diary, #/add?meal=1&q=, #/product?id=, #/product/edit?id=|ean=|name=,
-   #/recipes, #/reports, #/planner, #/more */
+   Routen: #/ (Mein Tag), #/diary, #/add?meal=1&tab=&q=, #/quick?meal=, #/entry?id=, #/product?id=&meal=,
+   #/product/edit?id=|ean=|name=, #/recipes, #/reports, #/planner, #/more */
 
 const MEALS = { 1: 'Frühstück', 2: 'Mittagessen', 3: 'Abendessen', 4: 'Snacks' };
 const MACROS = [  // Reihenfolge und Farben wie in der Legende; kcal je Gramm für die Aufteilung nach Energie
@@ -233,9 +234,9 @@ async function renderDiary(isCurrent) {
         <span class="kc"><b>${num(sum(list, 'kcal'))} kcal</b>
           <span>KH ${num(sum(list, 'carbs'))} · F ${num(sum(list, 'fat'))} · P ${num(sum(list, 'protein'))}</span></span>
       </button>
-      <ul>${list.map(e => `<li><span class="thumb">${icon('food')}</span>
+      <ul>${list.map(e => `<li><a class="entry" href="#/entry?id=${e.id}"><span class="thumb">${icon('food')}</span>
         <span class="what"><b>${esc(e.label)}</b><span>${e.grams ? `${num(e.grams)} g` : '&nbsp;'}</span></span>
-        <span class="kc"><b>${num(e.kcal)} kcal</b><span>${hhmm(new Date(e.eaten_at))}</span></span></li>`).join('')}</ul>
+        <span class="kc"><b>${num(e.kcal)} kcal</b><span>${hhmm(new Date(e.eaten_at))}</span></span></a></li>`).join('')}</ul>
       <a class="meal-add" href="#/add?meal=${m}">${icon('plus')}Mahlzeit eintragen</a>
     </section>`;
   }).join('');
@@ -291,16 +292,19 @@ const val1 = v => (v == null ? '–' : num(v, 1));  // fehlende Werte als Strich
 const nutLine = p => `${p.kcal == null ? '–' : num(p.kcal)} kcal · KH ${val1(p.carbs)} · F ${val1(p.fat)} · P ${val1(p.protein)}`;
 const srcBadge = p => `<i class="src ${p.source}">${SOURCES[p.source]}</i>`;
 
-const hitHtml = p => `<li><a class="hit" href="#/product?id=${p.id}"><span class="thumb">${icon('food')}</span>
+const hitHtml = (p, meal) => `<li><a class="hit" href="#/product?id=${p.id}&meal=${meal}"><span class="thumb">${icon('food')}</span>
   <span class="what"><b>${esc(p.name)}</b><span>${srcBadge(p)}${p.brand ? `${esc(p.brand)} · ` : ''}${nutLine(p)}</span></span>
   ${icon('right', 'go')}</a></li>`;
 
 const newProductCard = q => `<a class="card newprod" href="#/product/edit?name=${encodeURIComponent(q.trim())}">${icon('plus')}
   <span><b>Eigenes Produkt anlegen</b><span class="small">Nährwerte von der Packung übernehmen</span></span></a>`;
 
-const searchHint = () => `<div class="empty-state">${icon('search')}<b>Lebensmittel suchen</b>
+const quickCard = meal => `<a class="card newprod" href="#/quick?meal=${meal}">${icon('edit')}
+  <span><b>Schnelleintrag</b><span class="small">kcal und Makros direkt eingeben</span></span></a>`;
+
+const searchHint = meal => `<div class="empty-state">${icon('search')}<b>Lebensmittel suchen</b>
   <p class="hint">Durchsucht den BLS 4.0, deine eigenen und die schon gescannten Produkte.
-  Markenprodukte findest du am schnellsten über den Barcode.</p></div>${newProductCard('')}`;
+  Markenprodukte findest du am schnellsten über den Barcode.</p></div>${newProductCard('')}${quickCard(meal)}`;
 
 async function runSearch(q, meal) {
   const run = ++searchRun, box = $('#results');
@@ -309,14 +313,14 @@ async function runSearch(q, meal) {
   addHash = `#/add?meal=${meal}&tab=search${term ? `&q=${encodeURIComponent(term)}` : ''}`;
   history.replaceState(null, '', addHash);  // Begriff merken, ohne die Seite neu aufzubauen
   view.querySelectorAll('.pills a').forEach(a => a.classList.toggle('on', a.dataset.tab === 'search'));
-  if (!searchWords(term).length) { box.innerHTML = searchHint(); return; }
+  if (!searchWords(term).length) { box.innerHTML = searchHint(meal); return; }
   box.innerHTML = '<p class="hint pad">Suche …</p>';
   try {
     const hits = await searchProducts(term);
     if (run !== searchRun) return;
-    box.innerHTML = (hits.length ? `<ul class="card hits">${hits.map(hitHtml).join('')}</ul>`
+    box.innerHTML = (hits.length ? `<ul class="card hits">${hits.map(p => hitHtml(p, meal)).join('')}</ul>`
       : `<div class="empty-state">${icon('search')}<b>Nichts gefunden</b><p class="hint">Anders schreiben, Barcode scannen oder selbst anlegen.</p></div>`)
-      + newProductCard(term);
+      + newProductCard(term) + quickCard(meal);
   } catch (e) {
     if (run !== searchRun) return;
     if (e instanceof LoginNeeded) route();
@@ -332,7 +336,6 @@ function renderAdd(params) {
   const q = params.get('q') || '';
   const texts = {
     fav: ['Favoriten', 'Favoriten folgen in Paket P4.'],
-    last: ['Zuletzt gegessen', 'Die Liste der zuletzt eingetragenen Lebensmittel folgt in Paket P3.'],
     short: ['Shortcuts', 'Schnellwahl mit einem Tipp folgt in Paket P4.'],
   };
   view.innerHTML = `
@@ -345,20 +348,49 @@ function renderAdd(params) {
         <button id="scanBtn" class="icon-btn" aria-label="Barcode scannen">${icon('barcode')}</button>
       </div>
       <div class="when">
-        <div>${icon('calendar')}${esc(dayTitle(day))}${icon('down', 'dd')}</div>
-        <div>${icon('meal')}${MEALS[meal]}${icon('down', 'dd')}</div>
-        <div>${icon('clock')}${hhmm(new Date())}${icon('down', 'dd')}</div>
+        <label>${icon('calendar')}<input id="wDay" type="date" aria-label="Tag" value="${entryDay || isoDay(day)}"></label>
+        <label>${icon('meal')}<select id="wMeal" aria-label="Mahlzeit">${mealOptions(meal)}</select></label>
+        <label>${icon('clock')}<input id="wTime" type="time" aria-label="Uhrzeit" value="${entryTime || hhmm(new Date())}"></label>
       </div>
     </div>
-    <div id="results">${tab === 'search' ? '' : `<div class="empty-state">${icon(tabs.find(t => t[0] === tab)[1])}
-      <b>${texts[tab][0]}</b><p class="hint">${texts[tab][1]}</p></div>`}</div>`;
+    <div id="results">${texts[tab] ? `<div class="empty-state">${icon(tabs.find(t => t[0] === tab)[1])}
+      <b>${texts[tab][0]}</b><p class="hint">${texts[tab][1]}</p></div>` : ''}</div>`;
+  // Tag, Mahlzeit und Uhrzeit gelten als Vorgabe für das Eintragen auf der Produktseite
   const input = view.querySelector('.searchbox input');
+  $('#wDay').addEventListener('change', e => { entryDay = e.target.value; });
+  $('#wTime').addEventListener('change', e => { entryTime = e.target.value; });
+  $('#wMeal').addEventListener('change', e => {
+    const term = input.value.trim();  // aktueller Begriff, nicht der beim Aufbau der Seite
+    location.hash = `#/add?meal=${e.target.value}&tab=${tab}${term ? `&q=${encodeURIComponent(term)}` : ''}`;
+  });
   input.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(input.value, meal), 300); });
   input.addEventListener('keydown', e => { if (e.key === 'Enter') { clearTimeout(searchTimer); runSearch(input.value, meal); input.blur(); } });
   $('#scanBtn').addEventListener('click', openScanner);
   if (tab === 'search') {
     runSearch(q, meal);
     if (!q) input.focus();
+  } else if (tab === 'last') {
+    showRecent(meal);
+  }
+  // Tippen auf einem anderen Reiter wechselt zur Suche
+  input.addEventListener('focus', () => { if (tab !== 'search') runSearch(input.value, meal); }, { once: true });
+}
+
+// Zuletzt: Produkte der letzten Einträge, jedes nur einmal (gelöschte Produkte fallen heraus)
+async function showRecent(meal) {
+  const run = ++searchRun, box = $('#results');
+  box.innerHTML = '<p class="hint pad">Lade …</p>';
+  try {
+    const rows = await Cloud.rest(`nut_diary?select=product_id,nut_products(${PRODUCT_COLS})&product_id=not.is.null&order=eaten_at.desc&limit=200`);
+    if (run !== searchRun) return;
+    // Map behält die Reihenfolge des ersten Auftretens, also die neuesten zuerst
+    const list = [...new Map(rows.filter(r => r.nut_products).map(r => [r.product_id, r.nut_products])).values()].slice(0, 40);
+    box.innerHTML = list.length ? `<ul class="card hits">${list.map(p => hitHtml(p, meal)).join('')}</ul>`
+      : `<div class="empty-state">${icon('history')}<b>Zuletzt gegessen</b><p class="hint">Hier erscheinen die Lebensmittel, die du zuletzt eingetragen hast.</p></div>`;
+  } catch (e) {
+    if (run !== searchRun) return;
+    if (e instanceof LoginNeeded) route();
+    else box.innerHTML = `<p class="error pad">${esc(e.message)}</p>`;
   }
 }
 
@@ -429,13 +461,22 @@ async function renderProduct(params, isCurrent) {
   chrome({ title: 'Produkt', sub: true, back: addHash });
   const p = await loadProduct(params.get('id'));
   if (!isCurrent()) return;
-  const servings = p.nut_servings || [];
+  const servings = (p.nut_servings || []).sort((a, b) => a.grams - b.grams);  // kleinste Portion als Vorgabe
+  const meal = MEALS[params.get('meal')] ? params.get('meal') : mealForNow();
   const energy = p.kj == null && p.kcal == null ? '–' : `${num(p.kj)} kJ / ${num(p.kcal)} kcal`;
   view.innerHTML = `
     <section class="card product-head"><span class="thumb lg">${icon('food')}</span>
       <div><h2>${esc(p.name)}</h2><p class="small">${srcBadge(p)}${[p.brand && esc(p.brand),
         p.source !== 'bls' && p.source_ref && `EAN ${esc(p.source_ref)}`].filter(Boolean).join(' · ')}</p></div>
     </section>
+    <form id="eform" class="card pform" novalidate><h2>Eintragen</h2>
+      ${servings.length ? amountFields(servings, 1, 0) : amountFields([], 100)}
+      ${whenFields(entryDay || isoDay(day), meal, entryTime || hhmm(new Date()))}
+      <p class="entry-sum" id="esum"></p>
+      ${p.kcal == null && p.kj == null ? '<p class="hint">Für dieses Produkt fehlt die Energieangabe. Es wird mit 0 kcal eingetragen.</p>' : ''}
+      <p class="error" hidden></p>
+      <div class="form-actions"><button type="submit">${icon('plus')}Eintragen</button></div>
+    </form>
     <section class="card"><h2>Nährwerte je 100 g</h2>
       <table class="nutr"><tr><th>Energie</th><td>${energy}</td></tr>
         ${NUTR.map(([k, name, d]) => `<tr${k === 'sugar' ? ' class="sub"' : ''}><th>${name}</th><td>${p[k] == null ? '–' : `${num(p[k], d)} g`}</td></tr>`).join('')}</table>
@@ -443,8 +484,16 @@ async function renderProduct(params, isCurrent) {
     ${servings.length ? `<section class="card"><h2>Portionen</h2><table class="nutr">${servings.map(s => `<tr><th>${esc(s.label)}</th>
       <td>${num(s.grams)} g${p.kcal == null ? '' : ` · ${num((p.kcal * s.grams) / 100)} kcal`}</td></tr>`).join('')}</table></section>` : ''}
     <p class="hint pad">Quelle: ${sourceNote(p)}</p>
-    <p class="hint pad">Eintragen ins Tagebuch folgt in Paket P3.</p>
     ${p.source === 'bls' ? '' : `<a class="btn-wide" href="#/product/edit?id=${p.id}">${icon('edit')}Bearbeiten</a>`}`;
+  const f = $('#eform');
+  const values = () => scaleValues(per100(p), gramsOf(f) / 100);
+  const show = () => { $('#esum').textContent = sumLine(values(), gramsOf(f)); };
+  f.addEventListener('input', show);
+  show();
+  f.addEventListener('submit', e => {
+    e.preventDefault();
+    saveEntry(f, () => ({ product_id: p.id, label: p.name, grams: round1(gramsOf(f)), origin: 'app', ...values() }));
+  });
 }
 
 const servingRow = (s = {}) => `<div class="srv">
@@ -552,6 +601,168 @@ async function renderProductEdit(params, isCurrent) {
   });
 }
 
+// ---------- Tagebucheinträge: Eintragen, Schnelleintrag, Bearbeiten, Kopieren, Löschen ----------
+// Name und Nährwerte werden beim Eintragen festgeschrieben (siehe Schema). Eine geänderte Menge skaliert die
+// gespeicherten Werte, statt das Produkt neu zu laden – so bleiben auch Einträge gelöschter Produkte bearbeitbar.
+
+const ENTRY_VALUES = ['kj', 'kcal', 'fat', 'carbs', 'protein'];
+const QUICK_FIELDS = [['kcal', 'Energie (kcal)'], ['carbs', 'Kohlenhydrate (g)'], ['fat', 'Fett (g)'], ['protein', 'Protein (g)']];
+// Auf der Eintragen-Seite gewählter Tag und Uhrzeit (leer = angezeigter Tag bzw. jetzt); route() leert beide auf
+// Hauptseiten, damit Abbrechen den angezeigten Tag nicht verstellt
+let entryDay = '';
+let entryTime = '';
+
+const fv = (f, n) => f.elements.namedItem(n);
+const round1 = v => Math.round(v * 10) / 10;
+const dateAt = (iso, hm) => {
+  const [y, m, d] = iso.split('-').map(Number), [h, mi] = hm.split(':').map(Number);
+  return new Date(y, m - 1, d, h, mi);
+};
+const mealOptions = meal => Object.entries(MEALS)
+  .map(([k, n]) => `<option value="${k}"${Number(k) === Number(meal) ? ' selected' : ''}>${n}</option>`).join('');
+// replace statt neuer Verlaufseintrag: „Zurück“ führt danach nicht ins schon benutzte Formular
+const backToDay = () => { location.replace(mainHash === '#/' ? '#/' : '#/diary'); };
+
+// Werte je 100 g; fehlt kcal oder kJ, wird aus dem anderen umgerechnet, fehlende Makros zählen als 0
+const per100 = p => ({ kj: Number(p.kj ?? (p.kcal ?? 0) * 4.184), kcal: Number(p.kcal ?? (p.kj ?? 0) / 4.184),
+  fat: Number(p.fat || 0), carbs: Number(p.carbs || 0), protein: Number(p.protein || 0) });
+const scaleValues = (base, factor) => Object.fromEntries(ENTRY_VALUES.map(k => [k, round1(base[k] * factor)]));
+const sumLine = (v, grams) => `${num(grams, 1)} g · ${num(v.kcal)} kcal · KH ${num(v.carbs, 1)} · F ${num(v.fat, 1)} · P ${num(v.protein, 1)}`;
+
+// Menge mit Einheit: Gramm oder eine Portion des Produkts (Wert der Option = Gramm je Einheit); sel = Index der Portion
+const amountFields = (servings, qty, sel = -1) => `<div class="grid2">
+  <label>Menge<input name="qty" type="number" min="0.01" step="any" inputmode="decimal" required value="${esc(qty)}"></label>
+  <label>Einheit<select name="unit"><option value="1">Gramm</option>${servings.map((s, i) =>
+    `<option value="${esc(s.grams)}"${i === sel ? ' selected' : ''}>${esc(s.label)} (${num(s.grams)} g)</option>`).join('')}</select></label></div>`;
+const gramsOf = f => Number(fv(f, 'qty').value) * Number(fv(f, 'unit').value) || 0;
+
+const whenFields = (iso, meal, hm) => `<div class="grid3">
+  <label>Tag<input name="day" type="date" required value="${iso}"></label>
+  <label>Mahlzeit<select name="meal">${mealOptions(meal)}</select></label>
+  <label>Uhrzeit<input name="time" type="time" required value="${hm}"></label></div>`;
+
+const macroFields = (e = {}) => `<div class="grid2">${QUICK_FIELDS.map(([k, label]) => `<label>${label}<input name="${k}" type="number"
+  min="0" step="any" inputmode="decimal" value="${esc(e[k])}"${k === 'kcal' ? ' required' : ''}></label>`).join('')}</div>`;
+const macroValues = f => {
+  const v = k => round1(Number(fv(f, k).value || 0));
+  return { kcal: v('kcal'), kj: round1(v('kcal') * 4.184), carbs: v('carbs'), fat: v('fat'), protein: v('protein') };
+};
+
+// Prüft das Formular, schreibt den Eintrag (id: ändern, sonst neu) und zeigt danach dessen Tag
+async function saveEntry(f, build, id = null) {
+  const err = f.querySelector('.error');
+  err.hidden = true;
+  if (!f.checkValidity()) {
+    const bad = f.querySelector(':invalid');
+    bad.focus();
+    err.textContent = bad.name === 'day' || bad.name === 'time' ? 'Bitte Tag und Uhrzeit angeben.'
+      : bad.validity.valueMissing && bad.name === 'kcal' ? 'Bitte die Energie (kcal) angeben.'
+      : `${bad.closest('label')?.firstChild.textContent.trim() || 'Menge'}: bitte eine gültige Zahl eingeben.`;
+    err.hidden = false;
+    return;
+  }
+  const at = dateAt(fv(f, 'day').value, fv(f, 'time').value);
+  const body = { eaten_at: at.toISOString(), meal: Number(fv(f, 'meal').value), ...build() };
+  const buttons = f.querySelectorAll('button');
+  buttons.forEach(b => { b.disabled = true; });
+  try {
+    await Cloud.rest(id ? `nut_diary?id=eq.${id}` : 'nut_diary', { method: id ? 'PATCH' : 'POST', body, prefer: 'return=minimal' });
+    day = dateAt(isoDay(at), '12:00');
+    if (closedMeals.delete(String(body.meal))) saveClosed();  // sonst bliebe der neue Eintrag zugeklappt
+    backToDay();
+  } catch (ex) {
+    if (ex instanceof LoginNeeded) { route(); return; }
+    err.textContent = ex.message;
+    err.hidden = false;
+    buttons.forEach(b => { b.disabled = false; });
+  }
+}
+
+function renderQuick(params) {
+  chrome({ title: 'Schnelleintrag', sub: true, back: addHash });
+  const meal = MEALS[params.get('meal')] ? params.get('meal') : mealForNow();
+  view.innerHTML = `
+    <form id="qform" class="pform" novalidate>
+      <section class="card">
+        <label>Bezeichnung<input name="label" maxlength="120" placeholder="Schnelleintrag"></label>
+        ${macroFields()}
+      </section>
+      <section class="card">${whenFields(entryDay || isoDay(day), meal, entryTime || hhmm(new Date()))}</section>
+      <p class="error pad" hidden></p>
+      <div class="form-actions"><button type="submit">${icon('plus')}Eintragen</button></div>
+    </form>`;
+  const f = $('#qform');
+  fv(f, 'kcal').focus();
+  f.addEventListener('submit', e => {
+    e.preventDefault();
+    saveEntry(f, () => ({ label: fv(f, 'label').value.trim() || 'Schnelleintrag', origin: 'quick', ...macroValues(f) }));
+  });
+}
+
+async function renderEntry(params, isCurrent) {
+  chrome({ title: 'Eintrag', sub: true });
+  const id = Number(params.get('id'));
+  const rows = Number.isInteger(id) && id > 0
+    ? await Cloud.rest(`nut_diary?select=id,eaten_at,meal,label,grams,${ENTRY_VALUES.join(',')},origin,product_id,recipe_id,`
+      + `nut_products(nut_servings(label,grams))&id=eq.${id}`) : [];
+  if (!isCurrent()) return;
+  if (!rows.length) throw new Error('Eintrag nicht gefunden.');
+  const e = rows[0], at = new Date(e.eaten_at);
+  const byAmount = Number(e.grams) > 0;  // mit Menge: Werte skalieren; ohne (Schnelleintrag): Werte direkt bearbeiten
+  const servings = e.nut_products?.nut_servings || [];
+  view.innerHTML = `
+    <form id="entryForm" class="pform" novalidate>
+      <section class="card">
+        ${byAmount ? `<div class="product-head"><span class="thumb lg">${icon('food')}</span><div><h2>${esc(e.label)}</h2>
+            ${e.product_id ? `<a class="small" href="#/product?id=${e.product_id}&meal=${e.meal}">Produkt ansehen</a>` : ''}</div></div>
+          ${amountFields(servings, e.grams)}
+          <p class="entry-sum" id="esum"></p>`
+        : `<label>Bezeichnung<input name="label" maxlength="120" value="${esc(e.label)}"></label>${macroFields(e)}`}
+      </section>
+      <section class="card">${whenFields(isoDay(at), e.meal, hhmm(at))}</section>
+      <p class="hint pad">„Kopieren“ trägt den Eintrag zusätzlich mit Tag, Mahlzeit und Uhrzeit aus dem Formular ein.</p>
+      <p class="error pad" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="text danger" id="delEntry">Löschen</button>
+        <button type="submit" class="text" value="copy">Kopieren</button>
+        <button type="submit" value="save">Speichern</button></div>
+    </form>`;
+  const f = $('#entryForm');
+  const perGram = Object.fromEntries(ENTRY_VALUES.map(k => [k, Number(e[k] || 0) / Number(e.grams || 1)]));
+  const values = () => {
+    if (byAmount) return scaleValues(perGram, gramsOf(f));
+    const v = macroValues(f);
+    if (v.kcal === Number(e.kcal)) v.kj = Number(e.kj);  // kJ nur neu berechnen, wenn kcal geändert wurde
+    return v;
+  };
+  if (byAmount) {
+    const show = () => { $('#esum').textContent = sumLine(values(), gramsOf(f)); };
+    f.addEventListener('input', show);
+    show();
+  }
+  f.addEventListener('submit', ev => {
+    ev.preventDefault();
+    const copy = ev.submitter?.value === 'copy';
+    saveEntry(f, () => {
+      const body = { ...values(), ...(byAmount ? { grams: round1(gramsOf(f)) } : { label: fv(f, 'label').value.trim() || e.label }) };
+      return copy ? { label: e.label, product_id: e.product_id, recipe_id: e.recipe_id,
+        origin: e.origin === 'quick' ? 'quick' : 'app', ...body } : body;
+    }, copy ? null : e.id);
+  });
+  $('#delEntry').addEventListener('click', async () => {
+    if (!confirm(`„${e.label}“ löschen?`)) return;
+    try {
+      await Cloud.rest(`nut_diary?id=eq.${e.id}`, { method: 'DELETE', prefer: 'return=minimal' });
+      backToDay();
+    } catch (ex) {
+      if (ex instanceof LoginNeeded) { route(); return; }
+      const err = f.querySelector('.error');
+      err.textContent = ex.message;
+      err.hidden = false;
+    }
+  });
+}
+
 // ---------- Platzhalter und Mehr ----------
 
 function renderPlaceholder({ title, tab, ic, text, sub = false }) {
@@ -626,7 +837,11 @@ async function route() {
   const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
   const tab = path.split('/')[0] || 'day';
   const params = new URLSearchParams(query);
-  if (!['add', 'search', 'planner', 'product'].includes(tab)) mainHash = location.hash || '#/';
+  if (!['add', 'search', 'planner', 'product', 'quick', 'entry'].includes(tab)) {
+    mainHash = location.hash || '#/';
+    entryDay = '';
+    entryTime = '';
+  }
 
   if (!Cloud.configured) {
     chrome({ title: 'Nutrition', nav: false });
@@ -643,6 +858,8 @@ async function route() {
       return;
     }
     if (tab === 'add' || tab === 'search') renderAdd(params);
+    else if (tab === 'quick') renderQuick(params);
+    else if (tab === 'entry') await renderEntry(params, isCurrent);
     else if (path === 'product/edit') await renderProductEdit(params, isCurrent);
     else if (tab === 'product') await renderProduct(params, isCurrent);
     else if (tab === 'recipes') renderPlaceholder({ title: 'Rezepte', tab, ic: 'recipes', text: 'Eigene Rezepte aus Zutaten mit Portionen folgen in Paket P4.' });
@@ -660,7 +877,7 @@ async function route() {
 
 // Kalendertag verschieben (setDate statt ±24 h: stimmt auch an Tagen mit Zeitumstellung)
 const shiftDay = n => { day = new Date(day.getFullYear(), day.getMonth(), day.getDate() + n, 12); route(); };
-const setDay = iso => { const [y, m, d] = iso.split('-').map(Number); day = new Date(y, m - 1, d, 12); route(); };
+const setDay = iso => { day = dateAt(iso, '12:00'); route(); };
 $('#prevDay').addEventListener('click', () => shiftDay(-1));
 $('#nextDay').addEventListener('click', () => shiftDay(1));
 $('#weekDays').addEventListener('click', e => { const b = e.target.closest('button[data-day]'); if (b) setDay(b.dataset.day); });
