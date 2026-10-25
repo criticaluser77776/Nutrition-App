@@ -239,6 +239,29 @@ button.danger { color: var(--red); margin-right: auto; }
 .fddb-row a { color: var(--primary); }
 .fddb-row button.text { padding: 8px 0; }
 
+/* Favoriten und Shortcuts */
+.product-head > div { flex: 1; min-width: 0; }
+.fav .ic { color: var(--faint); }
+.fav[aria-pressed=true] .ic { color: var(--carbs); fill: currentColor; }
+.shortcuts li { display: flex; align-items: center; }
+button.shortcut { flex: 1; min-width: 0; background: transparent; border-radius: 0; font-weight: 400; text-align: left; }
+.shortcut .time { color: var(--primary); font-size: 14px; font-weight: 600; }
+.sc-edit { display: none; }
+.editing .sc-edit { display: grid; color: var(--primary); }
+.sc .form-actions a.text { display: inline-flex; align-items: center; gap: 4px; padding: 8px 12px; color: var(--primary);
+  font-weight: 600; text-decoration: none; margin-right: auto; }
+.sc .form-actions .ic { width: 20px; height: 20px; }
+.drawer { margin: 0 0 0 auto; width: min(300px, 85vw); height: 100%; max-height: none; border: 0; padding: 0;
+  background: var(--bg); color: var(--text); transition: transform .2s; }
+.drawer[open] { display: flex; flex-direction: column; animation: drawer-in .2s; }
+.drawer::backdrop { background: rgb(0 0 0 / .4); }
+@keyframes drawer-in { from { transform: translateX(100%); } }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 4px 8px 16px; background: var(--card); }
+.drawer-head h2 { margin: 0; font-size: 18px; }
+.drawer-body { flex: 1; overflow-y: auto; padding: 8px; }  /* volle Höhe: Tippen unter die Liste schließt nicht */
+.toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 50; max-width: calc(100% - 32px);
+  padding: 10px 16px; border-radius: 8px; background: var(--text); color: var(--bg); font-size: 14px; }
+
 /* Wischgesten (app.js, Abschnitt Wischgesten): Seite folgt dem Finger, Zeilen zeigen die Aktion dahinter */
 #view, .week-days { transition: transform .2s; }
 .days, .week-days, [data-swipe] { touch-action: pan-y pinch-zoom; user-select: none; -webkit-user-select: none; }

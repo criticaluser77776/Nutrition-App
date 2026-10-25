@@ -340,10 +340,6 @@ function renderAdd(params) {
   const tabs = [['search', 'search', 'Suche'], ['fav', 'star', 'Favoriten'], ['last', 'history', 'Zuletzt'], ['short', 'bolt', 'Shortcuts']];
   const tab = tabs.some(t => t[0] === params.get('tab')) ? params.get('tab') : 'search';
   const q = params.get('q') || '';
-  const texts = {
-    fav: ['Favoriten', 'Favoriten folgen in Paket P4.'],
-    short: ['Shortcuts', 'Schnellwahl mit einem Tipp folgt in Paket P4.'],
-  };
   view.innerHTML = `
     <div class="journal">
       <nav class="pills">${tabs.map(([k, , name]) =>
@@ -359,8 +355,7 @@ function renderAdd(params) {
         <label>${icon('clock')}<input id="wTime" type="time" aria-label="Uhrzeit" value="${entryTime || hhmm(new Date())}"></label>
       </div>
     </div>
-    <div id="results">${texts[tab] ? `<div class="empty-state">${icon(tabs.find(t => t[0] === tab)[1])}
-      <b>${texts[tab][0]}</b><p class="hint">${texts[tab][1]}</p></div>` : ''}</div>`;
+    <div id="results"></div>`;
   // Tag, Mahlzeit und Uhrzeit gelten als Vorgabe für das Eintragen auf der Produktseite
   const input = view.querySelector('.searchbox input');
   $('#wDay').addEventListener('change', e => { entryDay = e.target.value; });
@@ -376,23 +371,29 @@ function renderAdd(params) {
     runSearch(q, meal);
     if (!q) input.focus();
   } else if (tab === 'last') {
-    showRecent(meal);
+    showProducts(meal, 'nut_diary?order=eaten_at.desc&limit=200',
+      ['history', 'Zuletzt gegessen', 'Hier erscheinen die Lebensmittel, die du zuletzt eingetragen hast.']);
+  } else if (tab === 'fav') {
+    showProducts(meal, 'nut_favorites?order=id.desc',
+      ['star', 'Noch keine Favoriten', 'Auf der Produktseite mit dem Stern als Favorit markieren.']);
+  } else {
+    fillShortcuts($('#results'), () => entryDay || isoDay(day), backToDay);
   }
   // Tippen auf einem anderen Reiter wechselt zur Suche
   input.addEventListener('focus', () => { if (tab !== 'search') runSearch(input.value, meal); }, { once: true });
 }
 
-// Zuletzt: Produkte der letzten Einträge, jedes nur einmal (gelöschte Produkte fallen heraus)
-async function showRecent(meal) {
+// Zuletzt (aus dem Tagebuch) und Favoriten: Produkte der Abfrage, jedes nur einmal (gelöschte Produkte fallen heraus)
+async function showProducts(meal, query, [ic, title, text]) {
   const run = ++searchRun, box = $('#results');
   box.innerHTML = '<p class="hint pad">Lade …</p>';
   try {
-    const rows = await Cloud.rest(`nut_diary?select=product_id,nut_products(${PRODUCT_COLS})&product_id=not.is.null&order=eaten_at.desc&limit=200`);
+    const rows = await Cloud.rest(`${query}&select=product_id,nut_products(${PRODUCT_COLS})&product_id=not.is.null`);
     if (run !== searchRun) return;
     // Map behält die Reihenfolge des ersten Auftretens, also die neuesten zuerst
     const list = [...new Map(rows.filter(r => r.nut_products).map(r => [r.product_id, r.nut_products])).values()].slice(0, 40);
     box.innerHTML = list.length ? `<ul class="card hits">${list.map(p => hitHtml(p, meal)).join('')}</ul>`
-      : `<div class="empty-state">${icon('history')}<b>Zuletzt gegessen</b><p class="hint">Hier erscheinen die Lebensmittel, die du zuletzt eingetragen hast.</p></div>`;
+      : `<div class="empty-state">${icon(ic)}<b>${title}</b><p class="hint">${text}</p></div>`;
   } catch (e) {
     if (run !== searchRun) return;
     if (e instanceof LoginNeeded) route();
@@ -465,8 +466,11 @@ const sourceNote = p => p.source === 'bls' ? 'Bundeslebensmittelschlüssel (BLS)
 
 async function renderProduct(params, isCurrent) {
   chrome({ title: 'Produkt', sub: true, back: addHash });
-  const p = await loadProduct(params.get('id'));
+  const pid = Number(params.get('id'));
+  const [p, favRows] = await Promise.all([loadProduct(params.get('id')),
+    Number.isInteger(pid) && pid > 0 ? Cloud.rest(`nut_favorites?select=id&product_id=eq.${pid}`) : []]);
   if (!isCurrent()) return;
+  let fav = favRows.length > 0;
   const servings = (p.nut_servings || []).sort((a, b) => a.grams - b.grams);  // kleinste Portion als Vorgabe
   const meal = MEALS[params.get('meal')] ? params.get('meal') : mealForNow();
   const energy = p.kj == null && p.kcal == null ? '–' : `${num(p.kj)} kJ / ${num(p.kcal)} kcal`;
@@ -474,6 +478,7 @@ async function renderProduct(params, isCurrent) {
     <section class="card product-head"><span class="thumb lg">${icon('food')}</span>
       <div><h2>${esc(p.name)}</h2><p class="small">${srcBadge(p)}${[p.brand && esc(p.brand),
         p.source !== 'bls' && p.source_ref && `EAN ${esc(p.source_ref)}`].filter(Boolean).join(' · ')}</p></div>
+      <button type="button" class="icon-btn fav" id="favBtn" aria-label="Favorit" aria-pressed="${fav}">${icon('star')}</button>
     </section>
     <form id="eform" class="card pform" novalidate><h2>Eintragen</h2>
       ${servings.length ? amountFields(servings, 1, 0) : amountFields([], 100)}
@@ -481,7 +486,8 @@ async function renderProduct(params, isCurrent) {
       <p class="entry-sum" id="esum"></p>
       ${p.kcal == null && p.kj == null ? '<p class="hint">Für dieses Produkt fehlt die Energieangabe. Es wird mit 0 kcal eingetragen.</p>' : ''}
       <p class="error" hidden></p>
-      <div class="form-actions"><button type="submit">${icon('plus')}Eintragen</button></div>
+      <div class="form-actions"><button type="button" class="text" id="toShortcut">${icon('bolt')}Als Shortcut</button>
+        <button type="submit">${icon('plus')}Eintragen</button></div>
     </form>
     <section class="card"><h2>Nährwerte je 100 g</h2>
       <table class="nutr"><tr><th>Energie</th><td>${energy}</td></tr>
@@ -499,6 +505,38 @@ async function renderProduct(params, isCurrent) {
   f.addEventListener('submit', e => {
     e.preventDefault();
     saveEntry(f, () => ({ product_id: p.id, label: p.name, grams: round1(gramsOf(f)), origin: 'app', ...values() }));
+  });
+  const fail = msg => { const err = f.querySelector('.error'); err.textContent = msg; err.hidden = false; };
+  $('#favBtn').addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      await (fav ? Cloud.rest(`nut_favorites?product_id=eq.${p.id}`, { method: 'DELETE', prefer: 'return=minimal' })
+        : Cloud.rest('nut_favorites', { method: 'POST', body: { product_id: p.id }, prefer: 'return=minimal' }));
+      fav = !fav;
+    } catch (ex) {
+      if (ex instanceof LoginNeeded) { route(); return; }
+      if (ex.status === 409) fav = true;  // schon Favorit (anderes Gerät): Stern einfach setzen
+      else { fail(ex.message); btn.disabled = false; return; }
+    }
+    btn.setAttribute('aria-pressed', fav);
+    toast(fav ? 'Zu den Favoriten hinzugefügt' : 'Aus den Favoriten entfernt');
+    btn.disabled = false;
+  });
+  // Shortcut mit Menge und Mahlzeit aus dem Formular anlegen; Name und feste Uhrzeit danach auf der Shortcut-Seite
+  $('#toShortcut').addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    if (!(gramsOf(f) > 0)) { fail('Bitte eine Menge angeben.'); return; }
+    btn.disabled = true;
+    try {
+      const [{ id }] = await Cloud.rest('nut_shortcuts?select=id', { method: 'POST', prefer: 'return=representation',
+        body: { name: p.name, product_id: p.id, grams: round1(gramsOf(f)), meal: Number(fv(f, 'meal').value) } });
+      location.hash = `#/shortcut?id=${id}`;
+    } catch (ex) {
+      if (ex instanceof LoginNeeded) { route(); return; }
+      fail(ex.message);
+      btn.disabled = false;
+    }
   });
 }
 
@@ -834,6 +872,141 @@ async function renderEntry(params, isCurrent) {
   });
 }
 
+// ---------- Shortcuts: ein Tipp trägt ein Produkt mit fester Menge und Mahlzeit ein ----------
+// Rezepte als Shortcut folgen mit den Rezepten (P4b); bis dahin nur Produkt-Shortcuts.
+
+const SHORTCUT_COLS = `id,name,grams,meal,fixed_time,nut_products(${PRODUCT_COLS})`;
+const shortcutValues = s => scaleValues(per100(s.nut_products), Number(s.grams) / 100);
+const shortcutRow = s => `<li><button type="button" class="hit shortcut" data-sc="${s.id}"><span class="thumb">${icon('bolt')}</span>
+  <span class="what"><b>${esc(s.name)}</b><span>${num(s.grams)} g · ${num(shortcutValues(s).kcal)} kcal · ${MEALS[s.meal]}</span></span>
+  <span class="time">${s.fixed_time ? s.fixed_time.slice(0, 5) : 'jetzt'}</span></button>
+  <a class="icon-btn sc-edit" href="#/shortcut?id=${s.id}" aria-label="${esc(s.name)} bearbeiten">${icon('edit')}</a></li>`;
+
+function toast(msg) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.setAttribute('role', 'status');
+  t.textContent = msg;
+  document.body.append(t);
+  setTimeout(() => t.remove(), 2500);
+}
+
+// Eintrag am Tag iso; Uhrzeit fest oder jetzt. Danach zeigt die App diesen Tag.
+async function runShortcut(s, iso) {
+  const at = dateAt(iso, s.fixed_time ? s.fixed_time.slice(0, 5) : hhmm(new Date()));
+  await Cloud.rest('nut_diary', { method: 'POST', prefer: 'return=minimal', body: { eaten_at: at.toISOString(), meal: s.meal,
+    label: s.nut_products.name, grams: Number(s.grams), product_id: s.nut_products.id, origin: 'app', ...shortcutValues(s) } });
+  day = dateAt(iso, '12:00');
+  if (closedMeals.delete(String(s.meal))) saveClosed();
+  toast(`„${s.name}“ eingetragen`);
+}
+
+// Liste mit Fuß (Neuer Shortcut, Bearbeiten) in box; dayIso() liefert den Tag beim Tippen, done() läuft danach
+async function fillShortcuts(box, dayIso, done) {
+  const run = ++searchRun;
+  box.innerHTML = '<p class="hint pad">Lade …</p>';
+  let list;
+  try {
+    list = await Cloud.rest(`nut_shortcuts?select=${SHORTCUT_COLS}&product_id=not.is.null&grams=not.is.null&order=sort.asc,name.asc`);
+  } catch (e) {
+    if (run !== searchRun) return;
+    if (e instanceof LoginNeeded) route();
+    else box.innerHTML = `<p class="error pad">${esc(e.message)}</p>`;
+    return;
+  }
+  if (run !== searchRun) return;
+  list = list.filter(s => s.nut_products);
+  box.innerHTML = `<div class="sc">${list.length ? `<ul class="card hits shortcuts">${list.map(shortcutRow).join('')}</ul>`
+    : `<div class="empty-state">${icon('bolt')}<b>Noch keine Shortcuts</b></div>`}
+    <p class="hint pad">Ein Tipp trägt sofort ein. Neue Shortcuts legst du auf der Produktseite mit „Als Shortcut“ an.</p>
+    <div class="form-actions"><a class="text" href="#/add?tab=search">${icon('plus')}Neuer Shortcut</a>
+      ${list.length ? `<button type="button" class="text" data-edit>${icon('edit')}Bearbeiten</button>` : ''}</div></div>`;
+  const sc = box.firstElementChild;
+  sc.addEventListener('click', async e => {
+    if (e.target.closest('[data-edit]')) { sc.classList.toggle('editing'); return; }
+    const btn = e.target.closest('[data-sc]');
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    try {
+      await runShortcut(list.find(s => String(s.id) === btn.dataset.sc), dayIso());
+      done();
+    } catch (ex) {
+      btn.disabled = false;
+      if (ex instanceof LoginNeeded) route();
+      else toast(ex.message);
+    }
+  });
+}
+
+// Seitenleiste vom rechten Rand; schließt über Hintergrund, Schließen-Knopf oder Wischen nach rechts
+function openShortcuts() {
+  if ($('dialog.drawer[open]')) return;  // geschlossene entfernt erst das close-Ereignis
+  const dlg = document.createElement('dialog');
+  dlg.className = 'drawer';
+  dlg.innerHTML = `<div class="drawer-head"><h2>Shortcuts</h2>
+    <button type="button" class="icon-btn" data-close aria-label="Schließen">${icon('close')}</button></div><div class="drawer-body"></div>`;
+  document.body.append(dlg);
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.addEventListener('click', e => { if (e.target === dlg || e.target.closest('[data-close], a')) dlg.close(); });
+  addSwipe(dlg, () => ({
+    move: dx => { dlg.style.transition = 'none'; dlg.style.transform = `translateX(${Math.max(0, dx)}px)`; },
+    end: dx => { dlg.style.transition = dlg.style.transform = ''; if (dx > 80) dlg.close(); },
+  }));
+  dlg.showModal();
+  fillShortcuts(dlg.querySelector('.drawer-body'), () => isoDay(day), () => { dlg.close(); route(); });
+}
+
+async function renderShortcut(params, isCurrent) {
+  chrome({ title: 'Shortcut', sub: true });
+  const id = Number(params.get('id'));
+  const rows = Number.isInteger(id) && id > 0 ? await Cloud.rest(`nut_shortcuts?select=${SHORTCUT_COLS}&id=eq.${id}`) : [];
+  if (!isCurrent()) return;
+  if (!rows.length) throw new Error('Shortcut nicht gefunden.');
+  const s = rows[0];
+  view.innerHTML = `
+    <form id="scForm" class="pform" novalidate>
+      <section class="card">
+        <label>Name<input name="name" required maxlength="80" value="${esc(s.name)}"></label>
+        ${s.nut_products ? `<p class="small">Produkt: ${esc(s.nut_products.name)}</p>` : ''}
+        <div class="grid2">
+          <label>Menge (g)<input name="grams" type="number" min="0.1" step="any" inputmode="decimal" required value="${esc(s.grams)}"></label>
+          <label>Mahlzeit<select name="meal">${mealOptions(s.meal)}</select></label>
+        </div>
+        <label>Feste Uhrzeit (leer = beim Tippen)<input name="time" type="time" value="${s.fixed_time ? s.fixed_time.slice(0, 5) : ''}"></label>
+      </section>
+      <p class="error pad" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="text danger" id="delSc">Löschen</button>
+        <button type="submit">Speichern</button></div>
+    </form>`;
+  const f = $('#scForm'), err = f.querySelector('.error');
+  const send = async (opt, ok) => {
+    err.hidden = true;
+    f.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    try {
+      await Cloud.rest(`nut_shortcuts?id=eq.${s.id}`, { ...opt, prefer: 'return=minimal' });
+      toast(ok);
+      location.replace(mainHash);  // „Zurück“ führt nicht ins Formular
+    } catch (ex) {
+      if (ex instanceof LoginNeeded) { route(); return; }
+      err.textContent = ex.message;
+      err.hidden = false;
+      f.querySelectorAll('button').forEach(b => { b.disabled = false; });
+    }
+  };
+  f.addEventListener('submit', e => {
+    e.preventDefault();
+    if (!f.checkValidity()) {
+      err.textContent = fv(f, 'name').validity.valid ? 'Bitte eine Menge über 0 angeben.' : 'Bitte einen Namen eingeben.';
+      err.hidden = false;
+      return;
+    }
+    send({ method: 'PATCH', body: { name: fv(f, 'name').value.trim() || s.name, grams: Number(fv(f, 'grams').value),
+      meal: Number(fv(f, 'meal').value), fixed_time: fv(f, 'time').value || null } }, 'Shortcut gespeichert');
+  });
+  $('#delSc').addEventListener('click', () => { if (confirm(`Shortcut „${s.name}“ löschen?`)) send({ method: 'DELETE' }, 'Shortcut gelöscht'); });
+}
+
 // ---------- Wischgesten ----------
 // Zeiger-Ereignisse decken Finger und Maus ab. touch-action: pan-y (style.css) überlässt senkrechtes Scrollen dem
 // Browser, der die Geste dann mit pointercancel beendet; eine waagerechte Bewegung gehört der Geste.
@@ -841,12 +1014,12 @@ async function renderEntry(params, isCurrent) {
 const SWIPE_SLOP = 10;  // px Bewegung, bevor die Richtung feststeht
 let swipedAt = 0;  // Ende der letzten Geste; der Klick direkt danach wird verschluckt
 
-// pick(Ziel) liefert für den Startpunkt { move(dx), end(dx) } oder null (keine Geste)
+// pick(Ziel, pointerdown) liefert für den Startpunkt { move(dx), end(dx) } oder null (keine Geste)
 function addSwipe(area, pick) {
   let g = null;
   area.addEventListener('pointerdown', e => {
     if (g?.on || (e.pointerType === 'mouse' && e.button !== 0) || e.target.closest('input, select, textarea')) return;  // zweiter Finger stört die laufende Geste nicht
-    const h = pick(e.target);
+    const h = pick(e.target, e);
     g = h && { h, id: e.pointerId, x: e.clientX, y: e.clientY, on: false };
   });
   area.addEventListener('pointermove', e => {
@@ -987,7 +1160,7 @@ async function route() {
   const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
   const tab = path.split('/')[0] || 'day';
   const params = new URLSearchParams(query);
-  if (!['add', 'search', 'planner', 'product', 'quick', 'entry'].includes(tab)) {
+  if (!['add', 'search', 'planner', 'product', 'quick', 'entry', 'shortcut'].includes(tab)) {
     mainHash = location.hash || '#/';
     entryDay = '';
     entryTime = '';
@@ -1010,6 +1183,7 @@ async function route() {
     if (tab === 'add' || tab === 'search') renderAdd(params);
     else if (tab === 'quick') renderQuick(params);
     else if (tab === 'entry') await renderEntry(params, isCurrent);
+    else if (tab === 'shortcut') await renderShortcut(params, isCurrent);
     else if (path === 'product/edit') await renderProductEdit(params, isCurrent);
     else if (tab === 'product') await renderProduct(params, isCurrent);
     else if (tab === 'recipes') renderPlaceholder({ title: 'Rezepte', tab, ic: 'recipes', text: 'Eigene Rezepte aus Zutaten mit Portionen folgen in Paket P4.' });
@@ -1039,11 +1213,15 @@ $('#pickDay').closest('label').addEventListener('click', e => {
   try { input.showPicker(); } catch { input.focus(); input.click(); }
 });
 $('#back').addEventListener('click', () => { location.hash = backHash || mainHash; });
-addSwipe(view, t => {
+addSwipe(view, (t, e) => {
   const row = t.closest('[data-swipe]');
   if (row) return rowSwipe(row);
-  return view.classList.contains('days') ? slide(view, shiftDay) : null;
+  if (!view.classList.contains('days')) return null;
+  // vom rechten Rand nach links: Shortcut-Menü statt Tageswechsel
+  if (e.clientX > innerWidth - 24) return { move() {}, end: dx => { if (dx < -40) openShortcuts(); } };
+  return slide(view, shiftDay);
 });
+$('#openShortcuts').addEventListener('click', openShortcuts);
 addSwipe($('#weekDays'), () => slide($('#weekDays'), n => shiftDay(7 * n)));
 document.addEventListener('click', e => { if (Date.now() - swipedAt < 400) { e.preventDefault(); e.stopPropagation(); } }, true);
 window.addEventListener('hashchange', route);
