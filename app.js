@@ -2,10 +2,11 @@
 /* Nutrition – App-Gerüst im Aufbau von docs/UI_VORLAGE.md: Anmeldung, „Mein Tag“ (Energie- und Makrokarte,
    Woche), Tagebuch-Tagesansicht mit Werteboard und Mahlzeiten, Eintragen mit Produktsuche (BLS, OFF, eigene),
    Barcode, „Zuletzt“ und Schnelleintrag, Produktseite mit Eintragen nach Menge oder Portion, Einträge bearbeiten,
-   kopieren und löschen, Formular für eigene Produkte, Platzhalter für Rezepte, Berichte und Planer,
-   „Mehr“ mit Konto und Quellenangaben.
+   kopieren und löschen, Formular für eigene Produkte, Rezepte aus Zutaten, Favoriten und Shortcuts,
+   Platzhalter für Berichte und Planer, „Mehr“ mit Konto und Quellenangaben.
    Routen: #/ (Mein Tag), #/diary, #/add?meal=1&tab=&q=, #/quick?meal=, #/entry?id=, #/product?id=&meal=,
-   #/product/edit?id=|ean=|name=, #/recipes, #/reports, #/planner, #/more */
+   #/product/edit?id=|ean=|name=, #/recipes, #/recipe?id=&meal=, #/recipe/edit?id=, #/shortcut?id=,
+   #/reports, #/planner, #/more */
 
 const MEALS = { 1: 'Frühstück', 2: 'Mittagessen', 3: 'Abendessen', 4: 'Snacks' };
 const MACROS = [  // Reihenfolge und Farben wie in der Legende; kcal je Gramm für die Aufteilung nach Energie
@@ -264,6 +265,7 @@ async function renderDiary(isCurrent) {
 
 const SOURCES = { own: 'Eigen', off: 'OFF', bls: 'BLS' };
 const PRODUCT_COLS = 'id,source,source_ref,name,brand,kj,kcal,fat,carbs,sugar,protein,fiber,salt';
+const RECIPE_COLS = `id,name,portions,notes,nut_recipe_items(id,grams,product_id,nut_products(${PRODUCT_COLS}))`;
 let addHash = '#/add';  // letzte Suche samt Begriff; Ziel des Schließen-Knopfs auf Produktseiten
 let searchRun = 0;  // nur die zuletzt gestartete Suche darf die Treffer schreiben
 let searchTimer;  // Verzögerung beim Tippen; route() stoppt sie, damit sie nach dem Seitenwechsel nicht mehr feuert
@@ -293,8 +295,10 @@ const val1 = v => (v == null ? '–' : num(v, 1));  // fehlende Werte als Strich
 const nutLine = p => `${p.kcal == null ? '–' : num(p.kcal)} kcal · KH ${val1(p.carbs)} · F ${val1(p.fat)} · P ${val1(p.protein)}`;
 const srcBadge = p => `<i class="src ${p.source}">${SOURCES[p.source]}</i>`;
 
-const hitHtml = (p, meal) => `<li data-swipe="hit"><a class="hit" href="#/product?id=${p.id}&meal=${meal}"><span class="thumb">${icon('food')}</span>
-  <span class="what"><b>${esc(p.name)}</b><span>${srcBadge(p)}${p.brand ? `${esc(p.brand)} · ` : ''}${nutLine(p)}</span></span>
+// Bild, Name und Zeile mit Quelle, Marke und Nährwerten; auch im Zutaten-Dialog der Rezepte
+const hitInner = p => `<span class="thumb">${icon('food')}</span>
+  <span class="what"><b>${esc(p.name)}</b><span>${srcBadge(p)}${p.brand ? `${esc(p.brand)} · ` : ''}${nutLine(p)}</span></span>`;
+const hitHtml = (p, meal) => `<li data-swipe="hit"><a class="hit" href="#/product?id=${p.id}&meal=${meal}">${hitInner(p)}
   ${icon('right', 'go')}</a></li>`;
 
 const newProductCard = q => `<a class="card newprod" href="#/product/edit?name=${encodeURIComponent(q.trim())}">${icon('plus')}
@@ -322,9 +326,12 @@ async function runSearch(q, meal) {
   if (!searchWords(term).length) { box.innerHTML = searchHint(meal); return; }
   box.innerHTML = '<p class="hint pad">Suche …</p>';
   try {
-    const hits = await searchProducts(term);
+    // scheitert nur die Rezeptsuche, bleiben die Produkttreffer sichtbar
+    const [hits, recipes] = await Promise.all([searchProducts(term),
+      searchRecipes(term).catch(e => { if (e instanceof LoginNeeded) throw e; return []; })]);
     if (run !== searchRun) return;
-    box.innerHTML = (hits.length ? `<ul class="card hits">${hits.map(p => hitHtml(p, meal)).join('')}</ul>`
+    box.innerHTML = (hits.length || recipes.length ? `<ul class="card hits">${recipes.map(r => recipeHitHtml(r, meal)).join('')}${
+      hits.map(p => hitHtml(p, meal)).join('')}</ul>`
       : `<div class="empty-state">${icon('search')}<b>Nichts gefunden</b><p class="hint">Anders schreiben, Barcode scannen oder selbst anlegen.</p></div>`)
       + newProductCard(term) + fddbCard(term) + quickCard(meal);
   } catch (e) {
@@ -383,16 +390,24 @@ function renderAdd(params) {
   input.addEventListener('focus', () => { if (tab !== 'search') runSearch(input.value, meal); }, { once: true });
 }
 
-// Zuletzt (aus dem Tagebuch) und Favoriten: Produkte der Abfrage, jedes nur einmal (gelöschte Produkte fallen heraus)
+// Zuletzt (aus dem Tagebuch) und Favoriten: Produkte und Rezepte der Abfrage, jedes nur einmal (gelöschte und
+// Schnelleinträge fallen heraus)
 async function showProducts(meal, query, [ic, title, text]) {
   const run = ++searchRun, box = $('#results');
   box.innerHTML = '<p class="hint pad">Lade …</p>';
   try {
-    const rows = await Cloud.rest(`${query}&select=product_id,nut_products(${PRODUCT_COLS})&product_id=not.is.null`);
+    const rows = await Cloud.rest(`${query}&select=product_id,recipe_id,nut_products(${PRODUCT_COLS})`
+      + '&or=(product_id.not.is.null,recipe_id.not.is.null)');
+    // Rezepte samt Zutaten in einer zweiten Abfrage, jedes nur einmal (statt einmal je Tagebuchzeile)
+    const rids = [...new Set(rows.map(r => r.recipe_id).filter(Boolean))];
+    const recipes = new Map((rids.length ? await Cloud.rest(`nut_recipes?select=${RECIPE_COLS}&id=in.(${rids.join(',')})`) : [])
+      .map(r => [r.id, r]));
     if (run !== searchRun) return;
     // Map behält die Reihenfolge des ersten Auftretens, also die neuesten zuerst
-    const list = [...new Map(rows.filter(r => r.nut_products).map(r => [r.product_id, r.nut_products])).values()].slice(0, 40);
-    box.innerHTML = list.length ? `<ul class="card hits">${list.map(p => hitHtml(p, meal)).join('')}</ul>`
+    const list = [...new Map(rows.filter(r => r.nut_products || recipes.has(r.recipe_id)).map(r => (r.recipe_id
+      ? [`r${r.recipe_id}`, () => recipeHitHtml(recipes.get(r.recipe_id), meal)]
+      : [`p${r.product_id}`, () => hitHtml(r.nut_products, meal)]))).values()].slice(0, 40);
+    box.innerHTML = list.length ? `<ul class="card hits">${list.map(html => html()).join('')}</ul>`
       : `<div class="empty-state">${icon(ic)}<b>${title}</b><p class="hint">${text}</p></div>`;
   } catch (e) {
     if (run !== searchRun) return;
@@ -470,7 +485,7 @@ async function renderProduct(params, isCurrent) {
   const [p, favRows] = await Promise.all([loadProduct(params.get('id')),
     Number.isInteger(pid) && pid > 0 ? Cloud.rest(`nut_favorites?select=id&product_id=eq.${pid}`) : []]);
   if (!isCurrent()) return;
-  let fav = favRows.length > 0;
+  const fav = favRows.length > 0;
   const servings = (p.nut_servings || []).sort((a, b) => a.grams - b.grams);  // kleinste Portion als Vorgabe
   const meal = MEALS[params.get('meal')] ? params.get('meal') : mealForNow();
   const energy = p.kj == null && p.kcal == null ? '–' : `${num(p.kj)} kJ / ${num(p.kcal)} kcal`;
@@ -480,15 +495,8 @@ async function renderProduct(params, isCurrent) {
         p.source !== 'bls' && p.source_ref && `EAN ${esc(p.source_ref)}`].filter(Boolean).join(' · ')}</p></div>
       <button type="button" class="icon-btn fav" id="favBtn" aria-label="Favorit" aria-pressed="${fav}">${icon('star')}</button>
     </section>
-    <form id="eform" class="card pform" novalidate><h2>Eintragen</h2>
-      ${servings.length ? amountFields(servings, 1, 0) : amountFields([], 100)}
-      ${whenFields(entryDay || isoDay(day), meal, entryTime || hhmm(new Date()))}
-      <p class="entry-sum" id="esum"></p>
-      ${p.kcal == null && p.kj == null ? '<p class="hint">Für dieses Produkt fehlt die Energieangabe. Es wird mit 0 kcal eingetragen.</p>' : ''}
-      <p class="error" hidden></p>
-      <div class="form-actions"><button type="button" class="text" id="toShortcut">${icon('bolt')}Als Shortcut</button>
-        <button type="submit">${icon('plus')}Eintragen</button></div>
-    </form>
+    ${entryFormHtml(servings.length ? amountFields(servings, 1, 0) : amountFields([], 100), meal,
+      p.kcal == null && p.kj == null ? '<p class="hint">Für dieses Produkt fehlt die Energieangabe. Es wird mit 0 kcal eingetragen.</p>' : '')}
     <section class="card"><h2>Nährwerte je 100 g</h2>
       <table class="nutr"><tr><th>Energie</th><td>${energy}</td></tr>
         ${NUTR.map(([k, name, d]) => `<tr${k === 'sugar' ? ' class="sub"' : ''}><th>${name}</th><td>${p[k] == null ? '–' : `${num(p[k], d)} g`}</td></tr>`).join('')}</table>
@@ -506,13 +514,30 @@ async function renderProduct(params, isCurrent) {
     e.preventDefault();
     saveEntry(f, () => ({ product_id: p.id, label: p.name, grams: round1(gramsOf(f)), origin: 'app', ...values() }));
   });
+  bindFavShortcut(f, p.name, { product_id: p.id }, fav);
+}
+
+// Formular „Eintragen“ der Produkt- und Rezeptseite; amount = Mengenfelder, note = Hinweis über der Fehlerzeile
+const entryFormHtml = (amount, meal, note = '') => `<form id="eform" class="card pform" novalidate><h2>Eintragen</h2>
+    ${amount}
+    ${whenFields(entryDay || isoDay(day), meal, entryTime || hhmm(new Date()))}
+    <p class="entry-sum" id="esum"></p>
+    ${note}
+    <p class="error" hidden></p>
+    <div class="form-actions"><button type="button" class="text" id="toShortcut">${icon('bolt')}Als Shortcut</button>
+      <button type="submit">${icon('plus')}Eintragen</button></div>
+  </form>`;
+
+// Stern (#favBtn) und „Als Shortcut“ (#toShortcut) auf Produkt- und Rezeptseite; ref = { product_id } oder { recipe_id }
+function bindFavShortcut(f, name, ref, fav) {
+  const [[key, refId]] = Object.entries(ref);
   const fail = msg => { const err = f.querySelector('.error'); err.textContent = msg; err.hidden = false; };
   $('#favBtn').addEventListener('click', async e => {
     const btn = e.currentTarget;
     btn.disabled = true;
     try {
-      await (fav ? Cloud.rest(`nut_favorites?product_id=eq.${p.id}`, { method: 'DELETE', prefer: 'return=minimal' })
-        : Cloud.rest('nut_favorites', { method: 'POST', body: { product_id: p.id }, prefer: 'return=minimal' }));
+      await (fav ? Cloud.rest(`nut_favorites?${key}=eq.${refId}`, { method: 'DELETE', prefer: 'return=minimal' })
+        : Cloud.rest('nut_favorites', { method: 'POST', body: ref, prefer: 'return=minimal' }));
       fav = !fav;
     } catch (ex) {
       if (ex instanceof LoginNeeded) { route(); return; }
@@ -530,7 +555,7 @@ async function renderProduct(params, isCurrent) {
     btn.disabled = true;
     try {
       const [{ id }] = await Cloud.rest('nut_shortcuts?select=id', { method: 'POST', prefer: 'return=representation',
-        body: { name: p.name, product_id: p.id, grams: round1(gramsOf(f)), meal: Number(fv(f, 'meal').value) } });
+        body: { name, ...ref, grams: round1(gramsOf(f)), meal: Number(fv(f, 'meal').value) } });
       location.hash = `#/shortcut?id=${id}`;
     } catch (ex) {
       if (ex instanceof LoginNeeded) { route(); return; }
@@ -813,17 +838,19 @@ async function renderEntry(params, isCurrent) {
   const id = Number(params.get('id'));
   const rows = Number.isInteger(id) && id > 0
     ? await Cloud.rest(`nut_diary?select=id,eaten_at,meal,label,grams,${ENTRY_VALUES.join(',')},origin,product_id,recipe_id,`
-      + `nut_products(nut_servings(label,grams))&id=eq.${id}`) : [];
+      + `nut_products(nut_servings(label,grams)),nut_recipes(${RECIPE_COLS})&id=eq.${id}`) : [];
   if (!isCurrent()) return;
   if (!rows.length) throw new Error('Eintrag nicht gefunden.');
   const e = rows[0], at = new Date(e.eaten_at);
   const byAmount = Number(e.grams) > 0;  // mit Menge: Werte skalieren; ohne (Schnelleintrag): Werte direkt bearbeiten
-  const servings = e.nut_products?.nut_servings || [];
+  const portion = e.nut_recipes && recipeInfo(e.nut_recipes).portion;  // Portion nach dem heutigen Stand des Rezepts
+  const servings = portion ? [{ label: 'Portion', grams: portion }] : e.nut_products?.nut_servings || [];
   view.innerHTML = `
     <form id="entryForm" class="pform" novalidate>
       <section class="card">
         ${byAmount ? `<div class="product-head"><span class="thumb lg">${icon('food')}</span><div><h2>${esc(e.label)}</h2>
-            ${e.product_id ? `<a class="small" href="#/product?id=${e.product_id}&meal=${e.meal}">Produkt ansehen</a>` : ''}</div></div>
+            ${e.product_id ? `<a class="small" href="#/product?id=${e.product_id}&meal=${e.meal}">Produkt ansehen</a>`
+              : e.recipe_id ? `<a class="small" href="#/recipe?id=${e.recipe_id}&meal=${e.meal}">Rezept ansehen</a>` : ''}</div></div>
           ${amountFields(servings, e.grams)}
           <p class="entry-sum" id="esum"></p>`
         : `<label>Bezeichnung<input name="label" maxlength="120" value="${esc(e.label)}"></label>${macroFields(e)}`}
@@ -872,11 +899,14 @@ async function renderEntry(params, isCurrent) {
   });
 }
 
-// ---------- Shortcuts: ein Tipp trägt ein Produkt mit fester Menge und Mahlzeit ein ----------
-// Rezepte als Shortcut folgen mit den Rezepten (P4b); bis dahin nur Produkt-Shortcuts.
+// ---------- Shortcuts: ein Tipp trägt ein Produkt oder Rezept mit fester Menge und Mahlzeit ein ----------
 
-const SHORTCUT_COLS = `id,name,grams,meal,fixed_time,nut_products(${PRODUCT_COLS})`;
-const shortcutValues = s => scaleValues(per100(s.nut_products), Number(s.grams) / 100);
+const SHORTCUT_COLS = `id,name,grams,meal,fixed_time,nut_products(${PRODUCT_COLS}),nut_recipes(${RECIPE_COLS})`;
+// Ziel eines Shortcuts: Name, Verweis für den Eintrag und Werte je 100 g
+const shortcutTarget = s => (s.nut_recipes
+  ? { name: s.nut_recipes.name, ref: { recipe_id: s.nut_recipes.id }, base: recipeInfo(s.nut_recipes).base }
+  : { name: s.nut_products.name, ref: { product_id: s.nut_products.id }, base: per100(s.nut_products) });
+const shortcutValues = s => scaleValues(shortcutTarget(s).base, Number(s.grams) / 100);
 const shortcutRow = s => `<li><button type="button" class="hit shortcut" data-sc="${s.id}"><span class="thumb">${icon('bolt')}</span>
   <span class="what"><b>${esc(s.name)}</b><span>${num(s.grams)} g · ${num(shortcutValues(s).kcal)} kcal · ${MEALS[s.meal]}</span></span>
   <span class="time">${s.fixed_time ? s.fixed_time.slice(0, 5) : 'jetzt'}</span></button>
@@ -893,9 +923,9 @@ function toast(msg) {
 
 // Eintrag am Tag iso; Uhrzeit fest oder jetzt. Danach zeigt die App diesen Tag.
 async function runShortcut(s, iso) {
-  const at = dateAt(iso, s.fixed_time ? s.fixed_time.slice(0, 5) : hhmm(new Date()));
+  const at = dateAt(iso, s.fixed_time ? s.fixed_time.slice(0, 5) : hhmm(new Date())), t = shortcutTarget(s);
   await Cloud.rest('nut_diary', { method: 'POST', prefer: 'return=minimal', body: { eaten_at: at.toISOString(), meal: s.meal,
-    label: s.nut_products.name, grams: Number(s.grams), product_id: s.nut_products.id, origin: 'app', ...shortcutValues(s) } });
+    label: t.name, grams: Number(s.grams), ...t.ref, origin: 'app', ...shortcutValues(s) } });
   day = dateAt(iso, '12:00');
   if (closedMeals.delete(String(s.meal))) saveClosed();
   toast(`„${s.name}“ eingetragen`);
@@ -907,7 +937,7 @@ async function fillShortcuts(box, dayIso, done) {
   box.innerHTML = '<p class="hint pad">Lade …</p>';
   let list;
   try {
-    list = await Cloud.rest(`nut_shortcuts?select=${SHORTCUT_COLS}&product_id=not.is.null&grams=not.is.null&order=sort.asc,name.asc`);
+    list = await Cloud.rest(`nut_shortcuts?select=${SHORTCUT_COLS}&grams=not.is.null&order=sort.asc,name.asc`);
   } catch (e) {
     if (run !== searchRun) return;
     if (e instanceof LoginNeeded) route();
@@ -915,10 +945,10 @@ async function fillShortcuts(box, dayIso, done) {
     return;
   }
   if (run !== searchRun) return;
-  list = list.filter(s => s.nut_products);
+  list = list.filter(s => s.nut_products || s.nut_recipes);
   box.innerHTML = `<div class="sc">${list.length ? `<ul class="card hits shortcuts">${list.map(shortcutRow).join('')}</ul>`
     : `<div class="empty-state">${icon('bolt')}<b>Noch keine Shortcuts</b></div>`}
-    <p class="hint pad">Ein Tipp trägt sofort ein. Neue Shortcuts legst du auf der Produktseite mit „Als Shortcut“ an.</p>
+    <p class="hint pad">Ein Tipp trägt sofort ein. Neue Shortcuts legst du auf der Produkt- oder Rezeptseite mit „Als Shortcut“ an.</p>
     <div class="form-actions"><a class="text" href="#/add?tab=search">${icon('plus')}Neuer Shortcut</a>
       ${list.length ? `<button type="button" class="text" data-edit>${icon('edit')}Bearbeiten</button>` : ''}</div></div>`;
   const sc = box.firstElementChild;
@@ -967,7 +997,8 @@ async function renderShortcut(params, isCurrent) {
     <form id="scForm" class="pform" novalidate>
       <section class="card">
         <label>Name<input name="name" required maxlength="80" value="${esc(s.name)}"></label>
-        ${s.nut_products ? `<p class="small">Produkt: ${esc(s.nut_products.name)}</p>` : ''}
+        ${s.nut_recipes ? `<p class="small">Rezept: ${esc(s.nut_recipes.name)} · 1 Portion = ${num(recipeInfo(s.nut_recipes).portion)} g</p>`
+          : s.nut_products ? `<p class="small">Produkt: ${esc(s.nut_products.name)}</p>` : ''}
         <div class="grid2">
           <label>Menge (g)<input name="grams" type="number" min="0.1" step="any" inputmode="decimal" required value="${esc(s.grams)}"></label>
           <label>Mahlzeit<select name="meal">${mealOptions(s.meal)}</select></label>
@@ -1005,6 +1036,233 @@ async function renderShortcut(params, isCurrent) {
       meal: Number(fv(f, 'meal').value), fixed_time: fv(f, 'time').value || null } }, 'Shortcut gespeichert');
   });
   $('#delSc').addEventListener('click', () => { if (confirm(`Shortcut „${s.name}“ löschen?`)) send({ method: 'DELETE' }, 'Shortcut gelöscht'); });
+}
+
+// ---------- Rezepte: Zutaten (Produkte mit Gramm) und Portionen ----------
+// Ein Rezept wird wie ein Produkt eingetragen: Werte je 100 g aus der Summe der Zutaten, eine Portion als Einheit.
+// Name und Werte werden beim Eintragen festgeschrieben; spätere Änderungen am Rezept verändern alte Tage nicht.
+
+// Zutaten, Gesamtgewicht, Gramm je Portion und Werte je 100 g (Grundlage wie per100 bei Produkten)
+function recipeInfo(r) {
+  const items = (r.nut_recipe_items || []).filter(i => i.nut_products);
+  const grams = sum(items, 'grams');
+  const total = Object.fromEntries(ENTRY_VALUES.map(k => [k, 0]));
+  items.forEach(i => { const b = per100(i.nut_products); ENTRY_VALUES.forEach(k => { total[k] += (b[k] * Number(i.grams)) / 100; }); });
+  return { items, grams, portion: grams / Number(r.portions || 1),
+    base: Object.fromEntries(ENTRY_VALUES.map(k => [k, grams ? (100 * total[k]) / grams : 0])) };
+}
+
+const portionsText = n => `${num(n, 1)} ${Number(n) === 1 ? 'Portion' : 'Portionen'}`;
+const recipeHitHtml = (r, meal) => {
+  const ri = recipeInfo(r);
+  return `<li data-swipe="hit"><a class="hit" href="#/recipe?id=${r.id}${meal ? `&meal=${meal}` : ''}"><span class="thumb">${icon('recipes')}</span>
+    <span class="what"><b>${esc(r.name)}</b><span><i class="src recipe">Rezept</i>${portionsText(r.portions)} · ${
+      num((ri.base.kcal * ri.portion) / 100)} kcal je Portion</span></span>
+    ${icon('right', 'go')}</a></li>`;
+};
+
+// Eigene Rezepte, deren Name jedes Wort enthält
+const searchRecipes = q => Cloud.rest(`nut_recipes?select=${RECIPE_COLS}&and=(${searchWords(q)
+  .map(w => `name.ilike.${encodeURIComponent(`*${w}*`)}`).join(',')})&order=name.asc&limit=20`);
+
+async function loadRecipe(idText) {
+  const id = Number(idText);
+  const rows = Number.isInteger(id) && id > 0 ? await Cloud.rest(`nut_recipes?select=${RECIPE_COLS}&id=eq.${id}`) : [];
+  if (!rows.length) throw new Error('Rezept nicht gefunden.');
+  return rows[0];
+}
+
+async function renderRecipes(isCurrent) {
+  chrome({ title: 'Rezepte', tab: 'recipes' });
+  const list = await Cloud.rest(`nut_recipes?select=${RECIPE_COLS}&order=name.asc`);
+  if (!isCurrent()) return;
+  view.innerHTML = `${list.length ? `<ul class="card hits">${list.map(r => recipeHitHtml(r, '')).join('')}</ul>`
+    : `<section class="card empty-state">${icon('recipes')}<b>Noch keine Rezepte</b>
+        <p class="hint">Ein Rezept fasst Zutaten mit Gramm zusammen und wird nach Portionen oder Gramm eingetragen.</p></section>`}
+    <a class="card newprod" href="#/recipe/edit">${icon('plus')}
+      <span><b>Neues Rezept</b><span class="small">Zutaten suchen und Gramm angeben</span></span></a>`;
+}
+
+// Rezeptseite: Eintragen nach Portion oder Gramm, Nährwerte, Zutaten. Aus Suche/Favoriten (mit meal) zurück zur Suche.
+async function renderRecipe(params, isCurrent) {
+  chrome({ title: 'Rezept', sub: true, back: params.get('meal') ? addHash : '#/recipes' });
+  const rid = Number(params.get('id'));
+  const [r, favRows] = await Promise.all([loadRecipe(params.get('id')),
+    Number.isInteger(rid) && rid > 0 ? Cloud.rest(`nut_favorites?select=id&recipe_id=eq.${rid}`) : []]);
+  if (!isCurrent()) return;
+  const ri = recipeInfo(r);
+  const meal = MEALS[params.get('meal')] ? params.get('meal') : mealForNow();
+  // Zellen kcal, KH, Fett, Protein für factor × 100 g
+  const cells = factor => ['kcal', 'carbs', 'fat', 'protein'].map(k => `<td>${num(ri.base[k] * factor, k === 'kcal' ? 0 : 1)}</td>`).join('');
+  view.innerHTML = `
+    <section class="card product-head"><span class="thumb lg">${icon('recipes')}</span>
+      <div><h2>${esc(r.name)}</h2><p class="small"><i class="src recipe">Rezept</i>${portionsText(r.portions)} · gesamt ${num(ri.grams)} g</p></div>
+      <button type="button" class="icon-btn fav" id="favBtn" aria-label="Favorit" aria-pressed="${favRows.length > 0}">${icon('star')}</button>
+    </section>
+    ${entryFormHtml(ri.grams ? amountFields([{ label: 'Portion', grams: ri.portion }], 1, 0) : amountFields([], 100), meal,
+      ri.grams ? '' : '<p class="hint">Das Rezept hat keine Zutaten. Es wird mit 0 kcal eingetragen.</p>')}
+    <section class="card"><h2>Nährwerte</h2>
+      <table class="nutr rtab"><tr><th></th><td>kcal</td><td>KH</td><td>Fett</td><td>Protein</td></tr>
+        <tr><th>1 Portion (${num(ri.portion)} g)</th>${cells(ri.portion / 100)}</tr>
+        <tr><th>100 g</th>${cells(1)}</tr></table>
+    </section>
+    <section class="card"><h2>Zutaten</h2><table class="nutr">${ri.items.map(i => `<tr><th>${esc(i.nut_products.name)}</th>
+      <td>${num(i.grams)} g · ${num((per100(i.nut_products).kcal * i.grams) / 100)} kcal</td></tr>`).join('')}</table></section>
+    ${r.notes ? `<section class="card"><h2>Notizen</h2><p class="notes">${esc(r.notes)}</p></section>` : ''}
+    <a class="btn-wide" href="#/recipe/edit?id=${r.id}">${icon('edit')}Bearbeiten</a>`;
+  const f = $('#eform');
+  const values = () => scaleValues(ri.base, gramsOf(f) / 100);
+  const show = () => { $('#esum').textContent = sumLine(values(), gramsOf(f)); };
+  f.addEventListener('input', show);
+  show();
+  f.addEventListener('submit', e => {
+    e.preventDefault();
+    saveEntry(f, () => ({ recipe_id: r.id, label: r.name, grams: round1(gramsOf(f)), origin: 'app', ...values() }));
+  });
+  bindFavShortcut(f, r.name, { recipe_id: r.id }, favRows.length > 0);
+}
+
+const ingRow = (p, grams = '') => `<div class="srv ing" data-pid="${p.id}">
+  <span class="ing-name"><b>${esc(p.name)}</b><span class="small">${p.kcal == null ? '–' : num(p.kcal)} kcal je 100 g</span></span>
+  <input name="igrams" type="number" min="0.1" step="any" inputmode="decimal" placeholder="g" aria-label="Gramm ${esc(p.name)}" required value="${esc(grams)}">
+  <button type="button" class="icon-btn" data-remove aria-label="Zutat entfernen">${icon('close')}</button></div>`;
+
+async function renderRecipeEdit(params, isCurrent) {
+  const id = params.get('id');
+  chrome({ title: id ? 'Rezept bearbeiten' : 'Neues Rezept', sub: true, back: id ? `#/recipe?id=${encodeURIComponent(id)}` : '#/recipes' });
+  const r = id ? await loadRecipe(id) : { name: '', portions: 1, notes: '', nut_recipe_items: [] };
+  if (!isCurrent()) return;
+  const prods = new Map();  // Produkt je Zutatenzeile (data-pid) für die Summe
+  const items = recipeInfo(r).items;
+  items.forEach(i => prods.set(String(i.product_id), i.nut_products));
+  view.innerHTML = `
+    <form id="rform" class="pform" novalidate>
+      <section class="card">
+        <label>Name <input name="name" required maxlength="120" value="${esc(r.name)}"></label>
+        <label>Portionen <input name="portions" type="number" min="0.1" step="any" inputmode="decimal" required value="${esc(r.portions)}"></label>
+        <label>Notizen <textarea name="notes" rows="3" maxlength="2000">${esc(r.notes)}</textarea></label>
+      </section>
+      <section class="card"><h2>Zutaten</h2><div id="ings">${items.map(i => ingRow(i.nut_products, i.grams)).join('')}</div>
+        <button type="button" class="text" id="addIng">${icon('plus')} Zutat hinzufügen</button>
+        <p class="entry-sum" id="rsum"></p></section>
+      <p class="error pad" id="rerr" hidden></p>
+      <div class="form-actions">
+        ${id ? '<button type="button" class="text danger" id="delRecipe">Löschen</button>' : ''}
+        <button type="submit">Speichern</button></div>
+    </form>`;
+  const f = $('#rform'), rerr = $('#rerr');
+  const fail = msg => { rerr.textContent = msg; rerr.hidden = false; };
+  const rows = () => [...f.querySelectorAll('.ing')]
+    .map(row => ({ product_id: Number(row.dataset.pid), grams: Number(row.querySelector('input').value) }));
+  const show = () => {
+    const ri = recipeInfo({ portions: Number(fv(f, 'portions').value) || 1,
+      nut_recipe_items: rows().filter(i => i.grams > 0).map(i => ({ ...i, nut_products: prods.get(String(i.product_id)) })) });
+    $('#rsum').textContent = ri.grams ? `Gesamt ${num(ri.grams)} g · ${num((ri.base.kcal * ri.grams) / 100)} kcal`
+      + ` · je Portion ${num(ri.portion)} g · ${num((ri.base.kcal * ri.portion) / 100)} kcal` : '';
+  };
+  f.addEventListener('input', show);
+  show();
+  $('#addIng').addEventListener('click', () => openProductPicker(p => {
+    prods.set(String(p.id), p);
+    $('#ings').insertAdjacentHTML('beforeend', ingRow(p));
+    $('#ings').lastElementChild.querySelector('input').focus();
+  }));
+  $('#ings').addEventListener('click', e => { if (e.target.closest('[data-remove]')) { e.target.closest('.ing').remove(); show(); } });
+
+  f.addEventListener('submit', async e => {
+    e.preventDefault();
+    rerr.hidden = true;
+    if (!f.checkValidity()) {
+      const bad = f.querySelector(':invalid');
+      bad.focus();
+      return fail(bad.name === 'name' ? 'Bitte einen Namen eingeben.'
+        : bad.name === 'portions' ? 'Bitte die Zahl der Portionen angeben (über 0).'
+        : `${bad.getAttribute('aria-label')}: bitte eine Menge über 0 eingeben.`);
+    }
+    const list = rows();
+    if (!list.length) return fail('Bitte mindestens eine Zutat hinzufügen.');
+    const body = { name: fv(f, 'name').value.trim(), portions: Number(fv(f, 'portions').value), notes: fv(f, 'notes').value.trim() || null };
+    if (!body.name) return fail('Bitte einen Namen eingeben.');
+    const btn = f.querySelector('[type=submit]');
+    btn.disabled = true;
+    try {
+      let rid = r.id;
+      if (rid) {
+        await Cloud.rest(`nut_recipes?id=eq.${rid}`, { method: 'PATCH', body, prefer: 'return=minimal' });
+      } else {
+        [{ id: rid }] = await Cloud.rest('nut_recipes?select=id', { method: 'POST', body, prefer: 'return=representation' });
+        r.id = rid;  // scheitern danach die Zutaten, ändert ein zweites Speichern dieses Rezept statt ein neues anzulegen
+      }
+      // erst neue Zutaten anlegen, dann die alten löschen: bricht es dazwischen ab, geht nichts verloren. Bis das
+      // Löschen geklappt hat, zählen alte und neue Zeilen als vorhanden, damit ein zweites Speichern beide entfernt.
+      const old = r.nut_recipe_items || [];
+      const added = await Cloud.rest('nut_recipe_items?select=id', { method: 'POST',
+        body: list.map(i => ({ ...i, recipe_id: rid })), prefer: 'return=representation' });
+      r.nut_recipe_items = [...old, ...added];
+      if (old.length) await Cloud.rest(`nut_recipe_items?id=in.(${old.map(i => i.id).join(',')})`, { method: 'DELETE', prefer: 'return=minimal' });
+      r.nut_recipe_items = added;
+      location.replace(`#/recipe?id=${rid}`);  // „Zurück“ führt nicht ins Formular
+    } catch (ex) {
+      if (ex instanceof LoginNeeded) { route(); return; }
+      fail(ex.message);
+      btn.disabled = false;
+    }
+  });
+
+  $('#delRecipe')?.addEventListener('click', async () => {
+    if (!confirm(`Rezept „${r.name}“ löschen? Einträge im Tagebuch bleiben erhalten, Favorit und Shortcuts dazu werden entfernt.`)) return;
+    try {
+      await Cloud.rest(`nut_recipes?id=eq.${r.id}`, { method: 'DELETE', prefer: 'return=minimal' });
+      location.replace('#/recipes');
+    } catch (ex) {
+      if (ex instanceof LoginNeeded) { route(); return; }
+      fail(ex.message);
+    }
+  });
+}
+
+// Zutat wählen: Produktsuche im Dialog; pick(Produkt) übernimmt den Treffer
+function openProductPicker(pick) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'scan picker';
+  dlg.innerHTML = `<form>
+    <h2>Zutat hinzufügen</h2>
+    <label>Lebensmittel <input name="q" type="search" enterkeyhint="search" autocomplete="off" placeholder="z. B. Haferflocken"></label>
+    <ul class="hits picks"></ul>
+    <div class="form-actions"><button type="button" class="text" data-close>Abbrechen</button></div>
+  </form>`;
+  document.body.append(dlg);
+  const form = dlg.querySelector('form'), input = form.elements.namedItem('q'), box = dlg.querySelector('.picks');
+  let hits = [], run = 0, timer;
+  const search = async () => {
+    clearTimeout(timer);
+    const me = ++run, term = input.value.trim();
+    if (!searchWords(term).length) { box.innerHTML = ''; return; }
+    box.innerHTML = '<li class="hint pad">Suche …</li>';
+    try {
+      const found = await searchProducts(term);
+      if (me !== run) return;
+      hits = found.slice(0, 30);
+      box.innerHTML = hits.length ? hits.map((p, i) => `<li><button type="button" class="hit pick" data-i="${i}">${hitInner(p)}</button></li>`).join('')
+        : '<li class="hint pad">Nichts gefunden. Eigene Produkte legst du über Eintragen → Suche an.</li>';
+    } catch (e) {
+      if (me !== run) return;
+      if (e instanceof LoginNeeded) { dlg.close(); route(); return; }
+      box.innerHTML = `<li class="error pad">${esc(e.message)}</li>`;
+    }
+  };
+  dlg.addEventListener('close', () => { clearTimeout(timer); run++; dlg.remove(); });
+  dlg.querySelector('[data-close]').addEventListener('click', () => dlg.close());
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 300); });
+  form.addEventListener('submit', e => { e.preventDefault(); search(); });
+  box.addEventListener('click', e => {
+    const b = e.target.closest('[data-i]');
+    if (!b) return;
+    dlg.close();  // zuerst: das Schließen gibt den Fokus an den Auslöser zurück, pick setzt ihn danach neu
+    pick(hits[Number(b.dataset.i)]);
+  });
+  dlg.showModal();
+  input.focus();
 }
 
 // ---------- Wischgesten ----------
@@ -1160,7 +1418,7 @@ async function route() {
   const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
   const tab = path.split('/')[0] || 'day';
   const params = new URLSearchParams(query);
-  if (!['add', 'search', 'planner', 'product', 'quick', 'entry', 'shortcut'].includes(tab)) {
+  if (!['add', 'search', 'planner', 'product', 'quick', 'entry', 'shortcut', 'recipe'].includes(tab)) {
     mainHash = location.hash || '#/';
     entryDay = '';
     entryTime = '';
@@ -1186,7 +1444,9 @@ async function route() {
     else if (tab === 'shortcut') await renderShortcut(params, isCurrent);
     else if (path === 'product/edit') await renderProductEdit(params, isCurrent);
     else if (tab === 'product') await renderProduct(params, isCurrent);
-    else if (tab === 'recipes') renderPlaceholder({ title: 'Rezepte', tab, ic: 'recipes', text: 'Eigene Rezepte aus Zutaten mit Portionen folgen in Paket P4.' });
+    else if (path === 'recipe/edit') await renderRecipeEdit(params, isCurrent);
+    else if (tab === 'recipe') await renderRecipe(params, isCurrent);
+    else if (tab === 'recipes') await renderRecipes(isCurrent);
     else if (tab === 'reports') renderPlaceholder({ title: 'Berichte', tab, ic: 'reports', text: 'Tages-, Wochen- und Diätbericht folgen in Paket P6.' });
     else if (tab === 'planner') renderPlaceholder({ title: 'Planer', ic: 'target', sub: true, text: 'Energie- und Nährwertziele je Wochentag folgen in Paket P5.' });
     else if (tab === 'more') renderMore();

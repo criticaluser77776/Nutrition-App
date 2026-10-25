@@ -247,6 +247,17 @@ button.danger { color: var(--red); margin-right: auto; }
 button.shortcut { flex: 1; min-width: 0; background: transparent; border-radius: 0; font-weight: 400; text-align: left; }
 .shortcut .time { color: var(--primary); font-size: 14px; font-weight: 600; }
 .sc-edit { display: none; }
+/* Rezepte */
+.src.recipe { background: color-mix(in srgb, var(--carbs) 30%, transparent); color: var(--text); }
+.ing .ing-name { min-width: 0; }
+.ing .ing-name b { display: block; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pform textarea { font: inherit; font-size: 16px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card); color: var(--text); width: 100%; resize: vertical; }
+.rtab td { padding-left: 8px; }
+.rtab tr:first-child td { font-weight: 400; font-size: 12px; color: var(--muted); }
+.notes { white-space: pre-wrap; margin: 0; }
+.picks { max-height: 50vh; overflow-y: auto; margin: 0 0 8px; }
+button.pick { width: 100%; background: transparent; border-radius: 0; font-weight: 400; text-align: left; }
 .editing .sc-edit { display: grid; color: var(--primary); }
 .sc .form-actions a.text { display: inline-flex; align-items: center; gap: 4px; padding: 8px 12px; color: var(--primary);
   font-weight: 600; text-decoration: none; margin-right: auto; }
