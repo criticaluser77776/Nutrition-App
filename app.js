@@ -559,6 +559,33 @@ function renderPlaceholder({ title, tab, ic, text, sub = false }) {
   view.innerHTML = `<section class="card empty-state">${icon(ic)}<b>${esc(title)}</b><p class="hint">${esc(text)}</p></section>`;
 }
 
+// ---------- Installation als App ----------
+// Chrome meldet über beforeinstallprompt, dass die Seite als echte App (eigenes Fenster) installiert werden kann.
+// Wer stattdessen „Zum Startbildschirm hinzufügen“ nutzt, bevor die Seite als installierbar gilt, bekommt nur
+// eine Verknüpfung, die mit Adressleiste im Browser startet. Der Knopf unter „Mehr“ vermeidet das.
+let installPrompt = null;
+let installed = false;  // in diesem Tab gerade installiert (der Tab selbst bleibt ein Browser-Tab)
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const refreshMore = () => { if (location.hash.startsWith('#/more')) route(); };
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; refreshMore(); });
+window.addEventListener('appinstalled', () => { installPrompt = null; installed = true; refreshMore(); });
+
+function installCard() {
+  if (isStandalone()) return '<section class="card"><h2>App</h2><p class="small">Läuft als installierte App.</p></section>';
+  if (installed) return '<section class="card"><h2>App</h2><p class="small">Installiert. Öffne sie ab jetzt über das Symbol auf dem Startbildschirm.</p></section>';
+  // iPadOS meldet sich wie ein Mac, verrät sich aber über den Touchscreen
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (/macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  const how = ios ? 'In Safari: Teilen → „Zum Home-Bildschirm“.'
+    : installPrompt ? 'Installiert die App mit eigenem Fenster ohne Adressleiste.'
+    : 'In Chrome: Menü ⋮ → „App installieren“. Steht dort nur „Zum Startbildschirm hinzufügen“, '
+      + 'die Seite einmal neu laden und ein paar Sekunden warten – dann erscheint hier ein Knopf.';
+  return `<section class="card install"><h2>Als App installieren</h2>
+    ${installPrompt ? `<button id="installBtn">${icon('plus')}App installieren</button>` : ''}
+    <p class="small">${how}</p>
+    <p class="small">Startet die App mit Adressleiste, ist nur eine Verknüpfung angelegt:
+      Symbol vom Startbildschirm entfernen und hier neu installieren.</p></section>`;
+}
+
 function renderMore() {
   chrome({ title: 'Mehr', tab: 'more' });
   view.innerHTML = `
@@ -571,6 +598,7 @@ function renderMore() {
       <a href="#/reports">${icon('reports')}Berichte${icon('right', 'go')}</a>
       <button id="logout">${icon('logout')}Abmelden</button>
     </section>
+    ${installCard()}
     <section class="card">
       <h2>Datenquellen</h2>
       <p class="small">Bundeslebensmittelschlüssel (BLS) 4.0, Max Rubner-Institut (2025), Lizenz CC BY 4.0,
@@ -578,6 +606,13 @@ function renderMore() {
       <p class="small">Produktdaten von Open Food Facts (openfoodfacts.org), Lizenz ODbL.</p>
     </section>`;
   $('#logout').addEventListener('click', async () => { await Cloud.signOut(); route(); });
+  $('#installBtn')?.addEventListener('click', async () => {
+    const p = installPrompt;
+    installPrompt = null;  // das Ereignis lässt sich nur einmal verwenden
+    p.prompt();
+    await p.userChoice.catch(() => {});
+    refreshMore();
+  });
 }
 
 // ---------- Router ----------
