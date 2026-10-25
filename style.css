@@ -256,6 +256,13 @@ button.shortcut { flex: 1; min-width: 0; background: transparent; border-radius:
 .rtab td { padding-left: 8px; }
 .rtab tr:first-child td { font-weight: 400; font-size: 12px; color: var(--muted); }
 .notes { white-space: pre-wrap; margin: 0; }
+/* Planer */
+.goals { display: grid; grid-template-columns: 28px repeat(4, minmax(0, 1fr)); gap: 6px; align-items: center; }
+.goals > span { font-size: 12px; color: var(--muted); text-align: center; }
+.goals > b.today { color: var(--primary); }
+.pform .goals input { padding: 10px 6px; font-size: 14px; text-align: right; }
+.goals .gk { grid-column: 2 / -1; margin: -2px 0 6px; }
+.goal-sets { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 -12px; }
 .picks { max-height: 50vh; overflow-y: auto; margin: 0 0 8px; }
 button.pick { width: 100%; background: transparent; border-radius: 0; font-weight: 400; text-align: left; }
 .editing .sc-edit { display: grid; color: var(--primary); }

@@ -3,7 +3,7 @@
    Woche), Tagebuch-Tagesansicht mit Werteboard und Mahlzeiten, Eintragen mit Produktsuche (BLS, OFF, eigene),
    Barcode, „Zuletzt“ und Schnelleintrag, Produktseite mit Eintragen nach Menge oder Portion, Einträge bearbeiten,
    kopieren und löschen, Formular für eigene Produkte, Rezepte aus Zutaten, Favoriten und Shortcuts,
-   Platzhalter für Berichte und Planer, „Mehr“ mit Konto und Quellenangaben.
+   Planer mit Zielen je Wochentag, Platzhalter für Berichte, „Mehr“ mit Konto und Quellenangaben.
    Routen: #/ (Mein Tag), #/diary, #/add?meal=1&tab=&q=, #/quick?meal=, #/entry?id=, #/product?id=&meal=,
    #/product/edit?id=|ean=|name=, #/recipes, #/recipe?id=&meal=, #/recipe/edit?id=, #/shortcut?id=,
    #/reports, #/planner, #/more */
@@ -197,7 +197,7 @@ function drawDay(weekRows, weekGoals) {
         </div>
       </div>
       <div class="goalbars">${goalbars}</div>
-      ${g ? '' : '<p class="hint">Noch kein Tagesziel für diesen Wochentag (Planer folgt).</p>'}
+      ${g ? '' : '<p class="hint">Noch kein Tagesziel für diesen Wochentag – <a href="#/planner">im Planer festlegen</a>.</p>'}
     </section>
     <section class="card">
       <div class="seg" role="tablist">
@@ -250,7 +250,7 @@ async function renderDiary(isCurrent) {
       <div><b>${num(burned)}</b><span>verbrannt</span></div><div class="op">=</div>
       <div class="rest${g && rest < 0 ? ' over' : ''}"><b>${g ? num(rest) : '–'}</b><span>${g && rest < 0 ? 'zu viel' : 'übrig'}</span></div>
     </section>
-    ${g ? '' : '<p class="hint" style="margin:-4px 8px 12px">Noch kein Tagesziel für diesen Wochentag (Planer folgt).</p>'}
+    ${g ? '' : '<p class="hint" style="margin:-4px 8px 12px">Noch kein Tagesziel für diesen Wochentag – <a href="#/planner">im Planer festlegen</a>.</p>'}
     ${meals}`;
   view.querySelectorAll('.meal[data-meal] .meal-head').forEach(h => h.addEventListener('click', () => {
     const card = h.closest('.meal'), m = card.dataset.meal;
@@ -1344,6 +1344,92 @@ async function deleteEntry(id, label) {
   }
 }
 
+// ---------- Planer ----------
+// Ziele je Wochentag in nut_goals (Schlüssel owner + weekday). Die Vorlage oben füllt alle Tage, Mo–Fr oder Sa + So,
+// aber nur mit ihren ausgefüllten Feldern. Gespeichert wird erst mit „Speichern“; Tage ohne jeden Wert werden gelöscht.
+
+const GOAL_FIELDS = [{ k: 'kcal', name: 'kcal', long: 'Energie (kcal)' }, ...MACROS.map(m => ({ k: m.k, name: `${m.name} g`, long: `${m.long} (g)` }))];
+const WEEKDAY_NAMES = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+const GOAL_SETS = { all: [1, 2, 3, 4, 5, 6, 7], work: [1, 2, 3, 4, 5], weekend: [6, 7] };
+
+async function renderPlanner(isCurrent) {
+  chrome({ title: 'Planer', sub: true });
+  const goals = await Cloud.rest('nut_goals?select=weekday,kcal,protein,fat,carbs');
+  if (!isCurrent()) return;
+  const stored = new Set(goals.map(x => x.weekday));  // Tage mit gespeicherter Zeile
+  const today = isoWeekday(new Date());
+  const input = (name, label, v) =>
+    `<input name="${name}" type="number" min="0" step="any" inputmode="decimal" aria-label="${esc(label)}" value="${esc(v ?? '')}">`;
+  const head = `<span></span>${GOAL_FIELDS.map(g => `<span>${g.name}</span>`).join('')}`;
+  const days = WEEKDAYS.map((w, i) => {
+    const wd = i + 1, goal = goals.find(x => x.weekday === wd) || {};
+    return `<b class="${wd === today ? 'today' : ''}" title="${WEEKDAY_NAMES[i]}">${w}</b>
+      ${GOAL_FIELDS.map(g => input(`${g.k}${wd}`, `${g.long} ${WEEKDAY_NAMES[i]}`, goal[g.k])).join('')}
+      <p class="hint gk" data-wd="${wd}" hidden></p>`;
+  }).join('');
+  view.innerHTML = `
+    <form id="gform" class="pform" novalidate>
+      <section class="card"><h2>Für mehrere Tage</h2>
+        <div class="goals">${head}<span></span>${GOAL_FIELDS.map(g => input(`t_${g.k}`, `${g.long} Vorlage`)).join('')}</div>
+        <p class="hint">Ausgefüllte Felder übernehmen, leere lassen die Tage unverändert:</p>
+        <div class="goal-sets"><button type="button" class="text" data-set="all">Alle Tage</button>
+          <button type="button" class="text" data-set="work">Mo–Fr</button>
+          <button type="button" class="text" data-set="weekend">Sa + So</button></div>
+      </section>
+      <section class="card"><h2>Ziele je Wochentag</h2>
+        <div class="goals" id="gdays">${head}${days}</div></section>
+      <p class="error pad" id="gerr" hidden></p>
+      <div class="form-actions"><button type="submit">Speichern</button></div>
+    </form>`;
+  const f = $('#gform'), gerr = $('#gerr');
+  const fail = msg => { gerr.textContent = msg; gerr.hidden = false; };
+  const val = name => { const v = fv(f, name).value; return v === '' ? null : Number(v); };
+  // Kontrolle: Energie aus den Makros (4/9/4 kcal je g), sobald ein Makro eingetragen ist
+  const showKcal = () => f.querySelectorAll('.gk').forEach(p => {
+    const set = MACROS.filter(m => val(`${m.k}${p.dataset.wd}`) !== null);
+    p.hidden = !set.length;
+    p.textContent = set.length ? `Makros ergeben ${num(set.reduce((s, m) => s + val(`${m.k}${p.dataset.wd}`) * m.kcal, 0))} kcal` : '';
+  });
+  f.addEventListener('input', showKcal);
+  showKcal();
+
+  f.querySelector('.goal-sets').addEventListener('click', e => {
+    const b = e.target.closest('[data-set]');
+    if (!b) return;
+    const bad = GOAL_FIELDS.map(g => fv(f, `t_${g.k}`)).find(i => !i.validity.valid);
+    if (bad) { bad.focus(); toast(`${bad.getAttribute('aria-label')}: bitte eine Zahl ab 0 eingeben`); return; }
+    const filled = GOAL_FIELDS.filter(g => fv(f, `t_${g.k}`).value !== '');
+    if (!filled.length) { toast('Erst oben mindestens einen Wert eintragen'); return; }
+    GOAL_SETS[b.dataset.set].forEach(wd => filled.forEach(g => { fv(f, `${g.k}${wd}`).value = fv(f, `t_${g.k}`).value; }));
+    showKcal();
+    toast(`Auf ${b.dataset.set === 'all' ? 'alle Tage' : b.textContent} übernommen – noch speichern`);
+  });
+
+  f.addEventListener('submit', async e => {
+    e.preventDefault();
+    gerr.hidden = true;
+    const bad = [...$('#gdays').querySelectorAll('input')].find(i => !i.validity.valid);
+    if (bad) { bad.focus(); return fail(`${bad.getAttribute('aria-label')}: bitte eine Zahl ab 0 eingeben.`); }
+    const rows = GOAL_SETS.all.map(wd => Object.fromEntries([['weekday', wd], ...GOAL_FIELDS.map(g => [g.k, val(`${g.k}${wd}`)])]));
+    const keep = rows.filter(r => GOAL_FIELDS.some(g => r[g.k] !== null));
+    const empty = rows.filter(r => !keep.includes(r) && stored.has(r.weekday)).map(r => r.weekday);  // nur vorhandene löschen
+    const btn = f.querySelector('[type=submit]');
+    btn.disabled = true;
+    try {
+      if (keep.length) await Cloud.rest('nut_goals?on_conflict=owner,weekday', { method: 'POST', body: keep,
+        prefer: 'resolution=merge-duplicates,return=minimal' });
+      keep.forEach(r => stored.add(r.weekday));
+      if (empty.length) await Cloud.rest(`nut_goals?weekday=in.(${empty.join(',')})`, { method: 'DELETE', prefer: 'return=minimal' });
+      empty.forEach(wd => stored.delete(wd));
+      toast('Ziele gespeichert');
+    } catch (ex) {
+      if (ex instanceof LoginNeeded) { route(); return; }
+      fail(ex.message);
+    }
+    btn.disabled = false;
+  });
+}
+
 // ---------- Platzhalter und Mehr ----------
 
 function renderPlaceholder({ title, tab, ic, text, sub = false }) {
@@ -1448,7 +1534,7 @@ async function route() {
     else if (tab === 'recipe') await renderRecipe(params, isCurrent);
     else if (tab === 'recipes') await renderRecipes(isCurrent);
     else if (tab === 'reports') renderPlaceholder({ title: 'Berichte', tab, ic: 'reports', text: 'Tages-, Wochen- und Diätbericht folgen in Paket P6.' });
-    else if (tab === 'planner') renderPlaceholder({ title: 'Planer', ic: 'target', sub: true, text: 'Energie- und Nährwertziele je Wochentag folgen in Paket P5.' });
+    else if (tab === 'planner') await renderPlanner(isCurrent);
     else if (tab === 'more') renderMore();
     else if (tab === 'diary') await renderDiary(isCurrent);
     else await renderDay(isCurrent);
