@@ -233,6 +233,23 @@ button.danger { color: var(--red); margin-right: auto; }
 .scan h2 { margin: 0 0 12px; font-size: 16px; }
 .scan video { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 12px; background: #000; margin-bottom: 12px; }
 .scan .form-actions { margin: 0; }
+.scan textarea { font: inherit; font-size: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card); color: var(--text); width: 100%; resize: vertical; }
+.fddb-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -4px 0 8px; }
+.fddb-row a { color: var(--primary); }
+.fddb-row button.text { padding: 8px 0; }
+
+/* Wischgesten (app.js, Abschnitt Wischgesten): Seite folgt dem Finger, Zeilen zeigen die Aktion dahinter */
+#view, .week-days { transition: transform .2s; }
+.days, .week-days, [data-swipe] { touch-action: pan-y pinch-zoom; user-select: none; -webkit-user-select: none; }
+[data-swipe] { position: relative; overflow: hidden; }
+[data-swipe] > a { position: relative; z-index: 1; background: var(--card); transition: transform .2s; }
+.swipe-bg { position: absolute; inset: 0; display: none; align-items: center; gap: 8px; padding: 0 16px; font-size: 14px; font-weight: 600; }
+.swipe-bg.left { justify-content: flex-end; }
+[data-dir=right] > .swipe-bg.right, [data-dir=left] > .swipe-bg.left { display: flex; }
+.swipe-bg.edit { background: var(--carbs); color: #1b1f22; }
+.swipe-bg.del { background: var(--red); color: var(--card); }
+.swipe-bg.show { background: var(--primary); color: var(--on-primary); }
 
 /* ---------- Mehr ---------- */
 .install button { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; }

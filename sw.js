@@ -1,6 +1,6 @@
 // Service Worker: App-Gerüst aus dem Cache (im Hintergrund aktualisiert). Supabase-Aufrufe (andere Domain)
 // gehen immer direkt ins Netz. Pfade relativ, damit die App auch unter …github.io/<repo>/ läuft.
-const SHELL = 'shell-v3';
+const SHELL = 'shell-v4';
 const SHELL_FILES = ['./', 'index.html', 'app.js', 'cloud.js', 'off.js', 'config.js', 'style.css', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
 

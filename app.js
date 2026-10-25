@@ -55,6 +55,7 @@ function chrome({ title, tab = '', week = false, sub = false, nav = true, back =
   $('#back').hidden = !sub;
   $('#actions').hidden = !week;
   $('#week').hidden = !week;
+  view.classList.toggle('days', week);  // Wischen über die Seite wechselt den Tag
   $('#tabs').hidden = !nav || sub;
   $('#fab').hidden = !nav || sub || tab === 'more';
   document.querySelectorAll('.tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
@@ -234,7 +235,7 @@ async function renderDiary(isCurrent) {
         <span class="kc"><b>${num(sum(list, 'kcal'))} kcal</b>
           <span>KH ${num(sum(list, 'carbs'))} · F ${num(sum(list, 'fat'))} · P ${num(sum(list, 'protein'))}</span></span>
       </button>
-      <ul>${list.map(e => `<li><a class="entry" href="#/entry?id=${e.id}"><span class="thumb">${icon('food')}</span>
+      <ul>${list.map(e => `<li data-swipe="entry" data-id="${e.id}"><a class="entry" href="#/entry?id=${e.id}"><span class="thumb">${icon('food')}</span>
         <span class="what"><b>${esc(e.label)}</b><span>${e.grams ? `${num(e.grams)} g` : '&nbsp;'}</span></span>
         <span class="kc"><b>${num(e.kcal)} kcal</b><span>${hhmm(new Date(e.eaten_at))}</span></span></a></li>`).join('')}</ul>
       <a class="meal-add" href="#/add?meal=${m}">${icon('plus')}Mahlzeit eintragen</a>
@@ -292,12 +293,17 @@ const val1 = v => (v == null ? '–' : num(v, 1));  // fehlende Werte als Strich
 const nutLine = p => `${p.kcal == null ? '–' : num(p.kcal)} kcal · KH ${val1(p.carbs)} · F ${val1(p.fat)} · P ${val1(p.protein)}`;
 const srcBadge = p => `<i class="src ${p.source}">${SOURCES[p.source]}</i>`;
 
-const hitHtml = (p, meal) => `<li><a class="hit" href="#/product?id=${p.id}&meal=${meal}"><span class="thumb">${icon('food')}</span>
+const hitHtml = (p, meal) => `<li data-swipe="hit"><a class="hit" href="#/product?id=${p.id}&meal=${meal}"><span class="thumb">${icon('food')}</span>
   <span class="what"><b>${esc(p.name)}</b><span>${srcBadge(p)}${p.brand ? `${esc(p.brand)} · ` : ''}${nutLine(p)}</span></span>
   ${icon('right', 'go')}</a></li>`;
 
 const newProductCard = q => `<a class="card newprod" href="#/product/edit?name=${encodeURIComponent(q.trim())}">${icon('plus')}
   <span><b>Eigenes Produkt anlegen</b><span class="small">Nährwerte von der Packung übernehmen</span></span></a>`;
+
+// Fddb nur als Nachschlagehilfe: öffnet die Suche in einem neuen Tab, die App ruft dort nichts ab
+const fddbUrl = q => `https://fddb.info/db/de/suche/?udd=0&cat=site-de&search=${encodeURIComponent(q.trim())}`;
+const fddbCard = q => (q.trim() ? `<a class="card newprod" href="${esc(fddbUrl(q))}" target="_blank" rel="noopener">${icon('search')}
+  <span><b>Bei Fddb nachsehen</b><span class="small">Werte dort kopieren und beim eigenen Produkt einfügen</span></span></a>` : '');
 
 const quickCard = meal => `<a class="card newprod" href="#/quick?meal=${meal}">${icon('edit')}
   <span><b>Schnelleintrag</b><span class="small">kcal und Makros direkt eingeben</span></span></a>`;
@@ -320,7 +326,7 @@ async function runSearch(q, meal) {
     if (run !== searchRun) return;
     box.innerHTML = (hits.length ? `<ul class="card hits">${hits.map(p => hitHtml(p, meal)).join('')}</ul>`
       : `<div class="empty-state">${icon('search')}<b>Nichts gefunden</b><p class="hint">Anders schreiben, Barcode scannen oder selbst anlegen.</p></div>`)
-      + newProductCard(term) + quickCard(meal);
+      + newProductCard(term) + fddbCard(term) + quickCard(meal);
   } catch (e) {
     if (run !== searchRun) return;
     if (e instanceof LoginNeeded) route();
@@ -517,7 +523,10 @@ async function renderProductEdit(params, isCurrent) {
         <label>Marke <input name="brand" maxlength="80" value="${esc(p.brand)}"></label>
         <label>Barcode (EAN) <input name="ean" inputmode="numeric" pattern="\\d{8,14}" value="${esc(p.source_ref)}"${p.source === 'off' ? ' readonly' : ''}></label>
       </section>
-      <section class="card"><h2>Nährwerte je 100 g</h2><div class="grid2">
+      <section class="card"><h2>Nährwerte je 100 g</h2>
+        <div class="fddb-row"><a class="small" id="fddbLink" href="${esc(fddbUrl(p.name))}" target="_blank" rel="noopener">Bei Fddb nachsehen</a>
+          <button type="button" class="text" id="fddbPaste">Werte einfügen</button></div>
+        <p class="hint" id="fddbNote" hidden></p><div class="grid2">
         ${FORM_FIELDS.map(([k, label]) => `<label>${label}<input name="${k}" type="number" min="0" step="any" inputmode="decimal"
           value="${esc(p[k])}"${k === 'kcal' ? ' required' : ''}></label>`).join('')}
       </div></section>
@@ -540,6 +549,20 @@ async function renderProductEdit(params, isCurrent) {
   });
   link('kcal', 'kj', 4.184);
   link('kj', 'kcal', 1 / 4.184);
+
+  el('name').addEventListener('input', () => { $('#fddbLink').href = fddbUrl(el('name').value); });
+  $('#fddbPaste').addEventListener('click', () => openFddbPaste(({ vals, basis }) => {
+    Object.entries(vals).forEach(([k, v]) => { el(k).value = v; el(k).dataset.manual = '1'; });
+    // nur kcal oder nur kJ kopiert: das andere Feld wie beim Tippen mitrechnen
+    if ((vals.kcal == null) !== (vals.kj == null)) {
+      const from = vals.kcal == null ? 'kj' : 'kcal', to = from === 'kj' ? 'kcal' : 'kj';
+      delete el(to).dataset.manual;
+      el(from).dispatchEvent(new Event('input'));
+    }
+    const other = basis && !/^100 ?g$/i.test(basis);  // z. B. 100 ml
+    $('#fddbNote').textContent = other ? `Fddb gibt die Werte für ${basis} an, die App rechnet sie als 100 g.` : '';
+    $('#fddbNote').hidden = !other;
+  }));
 
   $('#addServing').addEventListener('click', () => $('#servings').insertAdjacentHTML('beforeend', servingRow()));
   $('#servings').addEventListener('click', e => { if (e.target.closest('[data-remove]')) e.target.closest('.srv').remove(); });
@@ -599,6 +622,54 @@ async function renderProductEdit(params, isCurrent) {
       fail(ex.status === 409 ? 'Das Produkt steckt in einem Rezept und kann nicht gelöscht werden.' : ex.message);
     }
   });
+}
+
+// Nährwertblock einer Fddb-Produktseite lesen. Je nach Browser kommen Bezeichnung und Wert beim Kopieren in einer
+// Zeile (Tabulator) oder untereinander, deshalb wird Leerraum vereinheitlicht. „k. A.“ bleibt ungefüllt.
+const FDDB_LABELS = [['kj', 'Brennwert', 'kJ'], ['kcal', 'Kalorien', 'kcal'], ['fat', 'Fett', 'g'], ['carbs', 'Kohlenhydrate', 'g'],
+  ['sugar', 'davon Zucker', 'g'], ['protein', 'Protein', 'g'], ['fiber', 'Ballaststoffe', 'g'], ['salt', 'Salz', 'g']];
+
+function parseFddb(text) {
+  let t = text.replace(/\s+/g, ' ');
+  const start = t.search(/Nährwerte für/i);  // Kopfzeile davor (Name, Kurzwerte) überspringen
+  if (start >= 0) t = t.slice(start);
+  const vals = {};
+  for (const [k, label, unit] of FDDB_LABELS) {
+    const m = t.match(new RegExp(`\\b${label}:? (\\d[\\d.]*(?:,\\d+)?) ?${unit}\\b`, 'i'));
+    if (!m) continue;
+    // „2.250“ = Tausenderpunkt, „3.5“ = Dezimalpunkt (englische Seite), „3,5“ = Dezimalkomma
+    const raw = /^\d{1,3}(\.\d{3})+(,\d+)?$/.test(m[1]) ? m[1].replace(/\./g, '') : m[1];
+    vals[k] = Number(raw.replace(',', '.'));
+  }
+  return { vals, basis: t.match(/^Nährwerte für (.+?) (?:Brennwert|Kalorien)\b/i)?.[1] || '' };
+}
+
+function openFddbPaste(apply) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'scan';
+  dlg.innerHTML = `<form>
+    <h2>Werte von Fddb einfügen</h2>
+    <p class="hint">Auf der Produktseite bei Fddb den Abschnitt „Nährwerte für 100 g“ markieren, kopieren und hier einfügen.</p>
+    <label>Kopierter Text <textarea name="txt" rows="7" required></textarea></label>
+    <p class="error" hidden></p>
+    <div class="form-actions"><button type="button" class="text" data-close>Abbrechen</button><button type="submit">Übernehmen</button></div>
+  </form>`;
+  document.body.append(dlg);
+  const form = dlg.querySelector('form'), err = dlg.querySelector('.error');
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.querySelector('[data-close]').addEventListener('click', () => dlg.close());
+  form.addEventListener('submit', e => {
+    e.preventDefault();
+    const res = parseFddb(form.elements.namedItem('txt').value);
+    if (!Object.keys(res.vals).length) {
+      err.textContent = 'Keine Nährwerte erkannt. Bitte den Block ab „Nährwerte für …“ kopieren.';
+      err.hidden = false;
+      return;
+    }
+    apply(res);
+    dlg.close();
+  });
+  dlg.showModal();
 }
 
 // ---------- Tagebucheinträge: Eintragen, Schnelleintrag, Bearbeiten, Kopieren, Löschen ----------
@@ -763,6 +834,85 @@ async function renderEntry(params, isCurrent) {
   });
 }
 
+// ---------- Wischgesten ----------
+// Zeiger-Ereignisse decken Finger und Maus ab. touch-action: pan-y (style.css) überlässt senkrechtes Scrollen dem
+// Browser, der die Geste dann mit pointercancel beendet; eine waagerechte Bewegung gehört der Geste.
+
+const SWIPE_SLOP = 10;  // px Bewegung, bevor die Richtung feststeht
+let swipedAt = 0;  // Ende der letzten Geste; der Klick direkt danach wird verschluckt
+
+// pick(Ziel) liefert für den Startpunkt { move(dx), end(dx) } oder null (keine Geste)
+function addSwipe(area, pick) {
+  let g = null;
+  area.addEventListener('pointerdown', e => {
+    if (g?.on || (e.pointerType === 'mouse' && e.button !== 0) || e.target.closest('input, select, textarea')) return;  // zweiter Finger stört die laufende Geste nicht
+    const h = pick(e.target);
+    g = h && { h, id: e.pointerId, x: e.clientX, y: e.clientY, on: false };
+  });
+  area.addEventListener('pointermove', e => {
+    if (!g || e.pointerId !== g.id) return;
+    const dx = e.clientX - g.x, dy = e.clientY - g.y;
+    if (!g.on) {
+      if (Math.hypot(dx, dy) < SWIPE_SLOP) return;
+      if (Math.abs(dx) < Math.abs(dy) * 1.2) { g = null; return; }  // eher senkrecht: scrollen
+      g.on = true;
+      try { area.setPointerCapture(e.pointerId); } catch { /* Zeiger schon weg: Geste läuft ohne Capture weiter */ }
+    }
+    g.h.move(dx);
+  });
+  const stop = e => {
+    if (!g || e.pointerId !== g.id) return;
+    const { h, on, x } = g;
+    g = null;
+    if (!on) return;
+    swipedAt = Date.now();
+    h.end(e.type === 'pointerup' ? e.clientX - x : 0);  // abgebrochen: zurückschnappen
+  };
+  area.addEventListener('pointerup', stop);
+  area.addEventListener('pointercancel', stop);
+  area.addEventListener('dragstart', e => e.preventDefault());  // Maus: Links nicht als Drag & Drop ziehen
+}
+
+// Ganze Fläche folgt dem Finger gedämpft; ab 60 px blättert step um eins vor (nach links) oder zurück
+const slide = (el, step) => ({
+  move: dx => { el.style.transition = 'none'; el.style.transform = `translateX(${dx / 3}px)`; },
+  end: dx => { el.style.transition = el.style.transform = ''; if (Math.abs(dx) >= 60) step(dx < 0 ? 1 : -1); },
+});
+
+// Zeilen: Eintrag nach rechts = Bearbeiten (gelb), nach links = Löschen (rot); Suchtreffer in beide Richtungen = Ansehen
+const SWIPE_BG = {
+  entry: `<span class="swipe-bg right edit">${icon('edit')}Bearbeiten</span><span class="swipe-bg left del">Löschen${icon('trash')}</span>`,
+  hit: `<span class="swipe-bg right show">${icon('right')}Ansehen</span><span class="swipe-bg left show">Ansehen${icon('right')}</span>`,
+};
+const SWIPE_DO = {
+  entry: (row, dir, a) => (dir === 'right' ? (location.hash = a.getAttribute('href'))
+    : deleteEntry(row.dataset.id, row.querySelector('.what b').textContent)),
+  hit: (_row, _dir, a) => { location.hash = a.getAttribute('href'); },
+};
+
+function rowSwipe(row) {
+  const a = row.querySelector('a');
+  if (!row.querySelector('.swipe-bg')) row.insertAdjacentHTML('afterbegin', SWIPE_BG[row.dataset.swipe]);
+  return {
+    move: dx => { a.style.transition = 'none'; a.style.transform = `translateX(${dx}px)`; row.dataset.dir = dx > 0 ? 'right' : 'left'; },
+    end: dx => {
+      a.style.transition = a.style.transform = '';
+      if (Math.abs(dx) >= Math.min(120, row.offsetWidth * 0.3)) SWIPE_DO[row.dataset.swipe](row, dx > 0 ? 'right' : 'left', a);
+    },
+  };
+}
+
+async function deleteEntry(id, label) {
+  if (!confirm(`„${label}“ löschen?`)) return;
+  try {
+    await Cloud.rest(`nut_diary?id=eq.${id}`, { method: 'DELETE', prefer: 'return=minimal' });
+    route();
+  } catch (ex) {
+    if (ex instanceof LoginNeeded) route();
+    else alert(ex.message);
+  }
+}
+
 // ---------- Platzhalter und Mehr ----------
 
 function renderPlaceholder({ title, tab, ic, text, sub = false }) {
@@ -889,6 +1039,13 @@ $('#pickDay').closest('label').addEventListener('click', e => {
   try { input.showPicker(); } catch { input.focus(); input.click(); }
 });
 $('#back').addEventListener('click', () => { location.hash = backHash || mainHash; });
+addSwipe(view, t => {
+  const row = t.closest('[data-swipe]');
+  if (row) return rowSwipe(row);
+  return view.classList.contains('days') ? slide(view, shiftDay) : null;
+});
+addSwipe($('#weekDays'), () => slide($('#weekDays'), n => shiftDay(7 * n)));
+document.addEventListener('click', e => { if (Date.now() - swipedAt < 400) { e.preventDefault(); e.stopPropagation(); } }, true);
 window.addEventListener('hashchange', route);
 route();
 
